@@ -1,0 +1,15 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      SECRET_KEY: ${SECRET_KEY:-change-me-before-deploying}
+      WORKER_COUNT: ${WORKER_COUNT:-4}
+      STEP_DELAY_SECONDS: ${STEP_DELAY_SECONDS:-2.0}
+    volumes:
+      - app-data:/data
+    restart: unless-stopped
+
+volumes:
+  app-data:
