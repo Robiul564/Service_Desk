@@ -1,5 +1,13 @@
 # Service Desk: real-time service request management
 
+[![Live Demo](https://img.shields.io/badge/Render-Live%20Demo-brightgreen?logo=render&logoColor=white)](https://service-desk-app-4bsx.onrender.com)
+[![API Docs](https://img.shields.io/badge/Swagger-API%20Docs-blue?logo=swagger&logoColor=white)](https://service-desk-app-4bsx.onrender.com/docs)
+[![Health Status](https://img.shields.io/badge/Service-Healthy-success)](https://service-desk-app-4bsx.onrender.com/api/health)
+
+> **Live Deployment**: **[https://service-desk-app-4bsx.onrender.com](https://service-desk-app-4bsx.onrender.com)**  
+> **Interactive API Docs (Swagger)**: **[https://service-desk-app-4bsx.onrender.com/docs](https://service-desk-app-4bsx.onrender.com/docs)**  
+> **System Health & Worker Metrics**: **[https://service-desk-app-4bsx.onrender.com/api/health](https://service-desk-app-4bsx.onrender.com/api/health)**
+
 Operators submit service requests. A pool of background workers processes many of them at the same time.
 Supervisors (and the operators who own the requests) watch status and progress change **live over WebSockets**,
 with no polling and no page refresh.
@@ -22,6 +30,23 @@ Documents for the assessment:
 
 ## 1. Quick start
 
+### Live Cloud Deployment
+The full system is deployed live on Render with active WebSockets and background worker concurrency:
+- **Live Application**: [https://service-desk-app-4bsx.onrender.com](https://service-desk-app-4bsx.onrender.com)
+- **Interactive Swagger Docs**: [https://service-desk-app-4bsx.onrender.com/docs](https://service-desk-app-4bsx.onrender.com/docs)
+
+Demo accounts (password for all: `Password123!`):
+
+| Username | Role | Purpose |
+|----------|------|---------|
+| `alice` | Operator | Submit and track own requests |
+| `bob` | Operator | Submit and track own requests |
+| `sam` | Supervisor | Live monitor across all operators |
+
+**Best way to see it working:** open two browser windows side-by-side. Sign in as `sam` in one and `alice` in the other. Submit requests as Alice and watch Sam's board update live over WebSockets: new rows appear, progress rails fill, counters tick. Try cancelling a running request, and submit an *Urgent* one while others are queued.
+
+### Run Locally (Python)
+
 You need **Python 3.11 or newer**. Nothing else (no Node, no database server).
 
 ```bash
@@ -38,20 +63,6 @@ python run.py
 ```
 
 Open **http://localhost:8000**.
-
-Demo accounts (password for all: `Password123!`):
-
-| Username | Role |
-|----------|------|
-| `alice` | Operator |
-| `bob` | Operator |
-| `sam` | Supervisor |
-
-**Best way to see it working:** open two browser windows. Sign in as `sam` in one and `alice` in the other.
-Submit a few requests as Alice and watch Sam's board update live: new rows appear, progress rails fill,
-counters change. Try cancelling a running request, and submit an *Urgent* one while others are queued.
-
-Interactive API docs: http://localhost:8000/docs
 
 ### With Docker
 
@@ -188,8 +199,13 @@ Reasons for each choice are in section 2.7 of the design document.
 
 ## 6. API documentation
 
-Base URL `http://localhost:8000/api`. Send `Authorization: Bearer <token>` on everything except login and health.
-Live, try-it-out documentation is at `/docs`.
+- **Live Base URL**: `https://service-desk-app-4bsx.onrender.com/api`
+- **Local Base URL**: `http://localhost:8000/api`
+
+Send `Authorization: Bearer <token>` on all requests except login and health.
+Interactive, try-it-out documentation is live at:
+- **Cloud**: [https://service-desk-app-4bsx.onrender.com/docs](https://service-desk-app-4bsx.onrender.com/docs)
+- **Local**: `http://localhost:8000/docs`
 
 ### Errors
 
@@ -260,7 +276,10 @@ Statuses: `PENDING`, `IN_PROGRESS`, `COMPLETED`, `FAILED`, `CANCELLED`.
 
 ## 7. WebSocket events
 
-Connect to `ws://localhost:8000/ws?ticket=<ticket>` (preferred) or `ws://localhost:8000/ws?token=<token>` (legacy).
+Connect to:
+- **Cloud**: `wss://service-desk-app-4bsx.onrender.com/ws?ticket=<ticket>`
+- **Local**: `ws://localhost:8000/ws?ticket=<ticket>` (preferred) or `?token=<token>` (legacy)
+
 Obtain a ticket first with `POST /api/auth/ws-ticket`. The ticket is single-use and valid for 30 seconds,
 so it cannot become a persistent secret even if it appears in an access log.
 An invalid credential is closed with code `4401`.

@@ -261,7 +261,7 @@ flowchart LR
 | Auth | PBKDF2 + HMAC-signed tokens (stdlib) | No extra dependencies; stateless so it scales across instances |
 | Frontend | Vanilla JS (ES modules), CSS | No build tooling to install or break; the app is small enough that a framework would add more than it removes. State management is a ~20-line store |
 | Tests | pytest + FastAPI TestClient | Exercise real HTTP, WebSocket and worker behaviour end to end |
-| Packaging / CI | Docker, docker-compose, GitHub Actions | Reproducible run and automatic test execution |
+| Packaging / CI / Deployment | Docker, docker-compose, GitHub Actions CI, Render (cloud container deployment) | Reproducible local and cloud deployment, automated CI test execution |
 
 Alternatives considered: Celery/RQ for background jobs (needs a broker; overkill for one process, but the
 service/engine boundary would make swapping it in straightforward); Server-Sent Events (simpler, but one-way);
