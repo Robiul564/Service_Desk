@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: service-request-system
+    env: docker
+    dockerfilePath: Dockerfile
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: WORKER_COUNT
+        value: "4"
+      - key: STEP_DELAY_SECONDS
+        value: "2.0"
+      - key: FAILURE_RATE
+        value: "0.08"
+      - key: SEED_DEMO_USERS
+        value: "true"

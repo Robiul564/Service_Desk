@@ -61,6 +61,28 @@ docker compose up --build
 
 Then open http://localhost:8000. Data is kept in a named volume.
 
+### Cloud Deployment (Render / Railway / Docker)
+
+This application is ready for 1-click cloud deployment on platforms supporting persistent WebSockets and background worker loops:
+
+- **Render (Free Web Service)**:
+  1. Push this repository to GitHub.
+  2. Sign in to [Render.com](https://render.com) and click **New +** → **Blueprint** (or **Web Service**).
+  3. Select your repository. Render automatically reads [`render.yaml`](render.yaml) and builds the container via the [`Dockerfile`](Dockerfile).
+  4. Your live app is provisioned at `https://<your-subdomain>.onrender.com`.
+
+- **Railway**:
+  1. Push this repository to GitHub.
+  2. In [Railway.app](https://railway.app), click **New Project** → **Deploy from GitHub repo**.
+  3. Railway detects [`railway.json`](railway.json) and [`Dockerfile`](Dockerfile) and deploys automatically.
+
+- **Any Cloud Host (AWS, GCP, DigitalOcean, Fly.io)**:
+  Build and run the Docker container:
+  ```bash
+  docker build -t service-request-system .
+  docker run -p 8000:8000 -e PORT=8000 service-request-system
+  ```
+
 ### Run the tests
 
 ```bash
