@@ -182,19 +182,14 @@ class RequestService:
 
     # ---- operations used by the background workers -----------------------
     def recover_interrupted(self) -> list[tuple[int, Priority]]:
-        """After a restart: put interrupted work back in line and return everything queued."""
+        """After a restart: atomically move any interrupted IN_PROGRESS requests
+        back to PENDING in a single database round-trip and return all queued work.
+
+        Using a direct UPDATE (rather than two separate _transition calls) keeps
+        the state change atomic and avoids a transient FAILED entry in the audit log.
+        """
         with self._tx() as (_, repo):
-            for request_id, _prio in repo.ids_with_status(Status.IN_PROGRESS):
-                req = repo.get(request_id)
-                self._transition(
-                    repo, req, Status.FAILED, "Interrupted by a server restart",
-                    failure_reason="Interrupted by a server restart",
-                )
-                self._transition(
-                    repo, req, Status.PENDING, "Re-queued automatically after restart",
-                    progress=0, current_step=None, failure_reason=None, started_at=None,
-                )
-            return repo.ids_with_status(Status.PENDING)
+            return repo.reset_interrupted_to_pending()
 
     def begin_processing(self, request_id: int) -> RequestOut | None:
         with self._tx() as (_, repo):

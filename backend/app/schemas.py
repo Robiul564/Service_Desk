@@ -100,3 +100,7 @@ class UserOut(BaseModel):
 class TokenOut(BaseModel):
     token: str
     user: UserOut
+
+
+class WsTicketOut(BaseModel):
+    ticket: str

@@ -14,7 +14,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .config import Settings, load_settings
 from .database import build_engine, build_session_factory, init_db
-from .errors import AppError
+from .errors import AppError, RateLimitError
 from .processing import ProcessingEngine
 from .realtime import ConnectionManager, EventPublisher
 from .routers import auth, requests, system, ws
@@ -81,7 +81,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.exception_handler(AppError)
     async def handle_app_error(_: Request, exc: AppError):
-        return JSONResponse(status_code=exc.status_code, content={"error": {"code": exc.code, "message": exc.message}})
+        headers = {}
+        if isinstance(exc, RateLimitError):
+            headers["Retry-After"] = str(exc.retry_after)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"code": exc.code, "message": exc.message}},
+            headers=headers or None,
+        )
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(_: Request, exc: RequestValidationError):

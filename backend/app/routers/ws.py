@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from ..errors import AuthError
-from ..security import decode_token
+from ..security import decode_token, redeem_ws_ticket
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -15,10 +15,30 @@ CLOSE_UNAUTHORIZED = 4401
 
 
 @router.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket, token: str = Query(default="")) -> None:
+async def websocket_endpoint(
+    ws: WebSocket,
+    ticket: str = Query(default=""),
+    token: str = Query(default=""),
+) -> None:
+    """Open a live push connection.
+
+    Preferred: obtain a short-lived ticket from ``POST /api/auth/ws-ticket``
+    and pass it as ``?ticket=<value>``.  The ticket is single-use and expires
+    in 30 seconds, so it never becomes a useful secret even if it appears in
+    an access log.
+
+    Legacy fallback: pass ``?token=<bearer>`` directly.  This still works but
+    the full Bearer token will appear in access logs, which is undesirable in
+    production environments.
+    """
     state = ws.app.state
     try:
-        user = decode_token(token, state.settings.secret_key)
+        if ticket:
+            user = redeem_ws_ticket(ticket)
+        elif token:
+            user = decode_token(token, state.settings.secret_key)
+        else:
+            raise AuthError("No credentials provided")
     except AuthError:
         await ws.accept()
         await ws.close(code=CLOSE_UNAUTHORIZED)

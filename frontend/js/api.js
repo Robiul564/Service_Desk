@@ -50,6 +50,8 @@ async function call(path, { method = "GET", body, params } = {}) {
 export const api = {
   login: (username, password) => call("/api/auth/login", { method: "POST", body: { username, password } }),
   me: () => call("/api/auth/me"),
+  /** Fetch a short-lived single-use ticket for the WebSocket connection. */
+  wsTicket: () => call("/api/auth/ws-ticket", { method: "POST" }),
   list: (params) => call("/api/requests", { params }),
   stats: () => call("/api/requests/stats"),
   get: (id) => call(`/api/requests/${id}`),

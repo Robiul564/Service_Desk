@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
+from app.security import reset_rate_limiter
 
 
 def make_settings(tmp_path: Path, **overrides) -> Settings:
@@ -26,6 +27,14 @@ def make_settings(tmp_path: Path, **overrides) -> Settings:
     )
     values.update(overrides)
     return Settings(**values)
+
+
+@pytest.fixture(autouse=True)
+def _clear_rate_limiter():
+    """Reset the login rate-limiter state before every test so that tests
+    that deliberately exhaust the limit do not affect subsequent tests."""
+    reset_rate_limiter()
+    yield
 
 
 @pytest.fixture()

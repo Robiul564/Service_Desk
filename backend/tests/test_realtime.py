@@ -25,6 +25,32 @@ def test_rejects_connection_without_valid_token(client):
         assert info.value.code == 4401
 
 
+def test_ws_ticket_accepted_instead_of_token(client, alice):
+    """A short-lived ticket issued by POST /api/auth/ws-ticket can open the socket."""
+    ticket_res = client.post("/api/auth/ws-ticket", headers=alice)
+    assert ticket_res.status_code == 200
+    ticket = ticket_res.json()["ticket"]
+
+    with client.websocket_connect(f"/ws?ticket={ticket}") as ws:
+        msg = ws.receive_json()
+        assert msg["type"] == "connection.ready"
+        assert msg["data"]["user"] == "alice"
+
+
+def test_ws_ticket_is_single_use(client, alice):
+    """Redeeming a ticket a second time must be rejected."""
+    ticket = client.post("/api/auth/ws-ticket", headers=alice).json()["ticket"]
+    # First use succeeds.
+    with client.websocket_connect(f"/ws?ticket={ticket}") as ws:
+        ws.receive_json()  # connection.ready
+
+    # Second use must be rejected.
+    with client.websocket_connect(f"/ws?ticket={ticket}") as ws:
+        with pytest.raises(WebSocketDisconnect) as info:
+            ws.receive_json()
+        assert info.value.code == 4401
+
+
 def test_supervisor_receives_live_events_for_other_users_requests(client, alice, sam):
     with client.websocket_connect(f"/ws?token={_token(sam)}") as ws:
         assert ws.receive_json()["type"] == "connection.ready"

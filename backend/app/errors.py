@@ -16,6 +16,15 @@ class AuthError(AppError):
     code = "unauthorized"
 
 
+class RateLimitError(AppError):
+    status_code = 429
+    code = "rate_limited"
+
+    def __init__(self, message: str, retry_after: int = 60) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 class PermissionDeniedError(AppError):
     status_code = 403
     code = "forbidden"

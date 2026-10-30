@@ -135,7 +135,7 @@ function handleLiveEvent({ type, data }) {
 function startLive() {
   live?.stop();
   live = new LiveConnection({
-    getToken: () => store.get().token,
+    getTicket: () => api.wsTicket(),
     onEvent: handleLiveEvent,
     onState: (conn) => store.set({ conn }),
     onReconnect: () => { loadList(); loadStats(); },

@@ -1,4 +1,6 @@
-"""Password hashing and signed, expiring access tokens (stdlib only)."""
+"""Password hashing, signed expiring access tokens, and short-lived
+WebSocket tickets — all implemented with the stdlib only.
+"""
 from __future__ import annotations
 
 import base64
@@ -8,11 +10,53 @@ import json
 import secrets
 import time
 from dataclasses import dataclass
+from threading import Lock
 
 from .domain import Role
-from .errors import AuthError
+from .errors import AuthError, RateLimitError
 
 _ITERATIONS = 120_000
+
+# ---------------------------------------------------------------------------
+# Login rate limiter
+# ---------------------------------------------------------------------------
+# Simple sliding-window counter keyed by client IP.  After MAX_ATTEMPTS
+# failures within the window the endpoint returns 429 for the remainder of
+# WINDOW_SECONDS.  Successful logins clear the counter for that IP so normal
+# usage is not penalised.
+_MAX_ATTEMPTS = 10
+_WINDOW_SECONDS = 60
+
+_rate_lock: Lock = Lock()
+# {ip: [timestamp, ...]}
+_attempts: dict[str, list[float]] = {}
+
+
+def reset_rate_limiter() -> None:
+    """Clear all rate-limit state.  Only used in tests."""
+    with _rate_lock:
+        _attempts.clear()
+
+
+def check_login_rate(ip: str) -> None:
+    """Raise ``RateLimitError`` (HTTP 429) if the IP has too many recent attempts."""
+    now = time.time()
+    cutoff = now - _WINDOW_SECONDS
+    with _rate_lock:
+        history = [t for t in _attempts.get(ip, []) if t > cutoff]
+        if len(history) >= _MAX_ATTEMPTS:
+            raise RateLimitError(
+                f"Too many sign-in attempts. Please wait {_WINDOW_SECONDS} seconds.",
+                retry_after=_WINDOW_SECONDS,
+            )
+        history.append(now)
+        _attempts[ip] = history
+
+
+def clear_login_rate(ip: str) -> None:
+    """Reset the counter for an IP after a successful login."""
+    with _rate_lock:
+        _attempts.pop(ip, None)
 
 
 @dataclass(frozen=True)
@@ -84,3 +128,54 @@ def decode_token(token: str, secret: str) -> AuthUser:
         raise
     except Exception as exc:  # malformed token of any kind
         raise AuthError("Invalid token") from exc
+
+
+# ---------------------------------------------------------------------------
+# WebSocket one-time tickets
+# ---------------------------------------------------------------------------
+# The long-lived Bearer token must not appear in server access logs as a bare
+# query-string value.  Instead the browser calls POST /api/auth/ws-ticket (over
+# an already-authenticated REST session) to get a short-lived, single-use
+# ticket.  The WebSocket endpoint exchanges the ticket for the caller's identity
+# without ever seeing the long-lived token.
+_WS_TICKET_TTL = 30  # seconds — enough to open a socket, not long enough to reuse
+
+_ticket_lock: Lock = Lock()
+# {ticket_id: (user_json_str, expires_at)}
+_pending_tickets: dict[str, tuple[str, float]] = {}
+
+
+def _purge_expired_tickets() -> None:
+    now = time.time()
+    expired = [k for k, (_, exp) in _pending_tickets.items() if exp < now]
+    for k in expired:
+        del _pending_tickets[k]
+
+
+def create_ws_ticket(user: AuthUser) -> str:
+    """Mint a single-use ticket and return its opaque id."""
+    ticket_id = secrets.token_urlsafe(32)
+    payload = json.dumps(
+        {"sub": user.id, "usr": user.username, "name": user.full_name, "role": user.role.value},
+        separators=(",", ":"),
+    )
+    with _ticket_lock:
+        _purge_expired_tickets()
+        _pending_tickets[ticket_id] = (payload, time.time() + _WS_TICKET_TTL)
+    return ticket_id
+
+
+def redeem_ws_ticket(ticket_id: str) -> AuthUser:
+    """Exchange a ticket for the associated user.  Each ticket can only be used once."""
+    with _ticket_lock:
+        _purge_expired_tickets()
+        entry = _pending_tickets.pop(ticket_id, None)
+    if entry is None:
+        raise AuthError("Invalid or expired WebSocket ticket")
+    payload = json.loads(entry[0])
+    return AuthUser(
+        id=payload["sub"],
+        username=payload["usr"],
+        full_name=payload["name"],
+        role=Role(payload["role"]),
+    )

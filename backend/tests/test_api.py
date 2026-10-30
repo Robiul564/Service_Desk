@@ -13,6 +13,19 @@ def test_login_success_and_failure(client):
     assert bad.json()["error"]["code"] == "unauthorized"
 
 
+def test_login_rate_limit(client):
+    """After too many failed attempts the endpoint returns 429 with Retry-After."""
+    from app.security import _MAX_ATTEMPTS
+
+    for _ in range(_MAX_ATTEMPTS):
+        client.post("/api/auth/login", json={"username": "alice", "password": "wrong"})
+
+    blocked = client.post("/api/auth/login", json={"username": "alice", "password": "Password123!"})
+    assert blocked.status_code == 429
+    assert blocked.json()["error"]["code"] == "rate_limited"
+    assert "Retry-After" in blocked.headers
+
+
 def test_endpoints_require_authentication(client):
     assert client.get("/api/requests").status_code == 401
     assert client.get("/api/requests", headers={"Authorization": "Bearer garbage"}).status_code == 401

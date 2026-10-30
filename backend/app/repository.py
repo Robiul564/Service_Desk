@@ -87,6 +87,39 @@ class RequestRepository:
         )
         return [(r.id, r.priority) for r in rows]
 
+    def reset_interrupted_to_pending(self) -> list[tuple[int, Priority]]:
+        """Single-pass startup recovery.
+
+        Any request that was IN_PROGRESS when the server died is moved directly
+        to PENDING in one UPDATE statement (no intermediate FAILED state), so
+        the audit log stays clean and the operation is atomic.  A recovery
+        event is appended to each affected request's history.
+        """
+        # Find the ids first so we can append events.
+        in_progress = self.ids_with_status(Status.IN_PROGRESS)
+        if in_progress:
+            ids = [r[0] for r in in_progress]
+            self.s.execute(
+                update(ServiceRequest)
+                .where(ServiceRequest.id.in_(ids))
+                .values(
+                    status=Status.PENDING,
+                    progress=0,
+                    current_step=None,
+                    failure_reason=None,
+                    started_at=None,
+                    updated_at=utcnow(),
+                )
+            )
+            for req_id in ids:
+                self.add_event(
+                    req_id,
+                    Status.IN_PROGRESS,
+                    Status.PENDING,
+                    "Re-queued automatically after server restart",
+                )
+        return self.ids_with_status(Status.PENDING)
+
     # ---- queries ---------------------------------------------------------
     def _filtered(self, p: SearchParams):
         stmt = select(ServiceRequest)
