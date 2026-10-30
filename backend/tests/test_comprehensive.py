@@ -291,7 +291,7 @@ class TestListSearchFilterSort:
 
     def test_sort_oldest_returns_first_submitted_first(self, client, alice):
         ids = [
-            client.post("/api/requests", json={**VALID, "title": f"T{i}"}, headers=alice).json()["id"]
+            client.post("/api/requests", json={**VALID, "title": f"Task {i}"}, headers=alice).json()["id"]
             for i in range(3)
         ]
         res = client.get("/api/requests", params={"sort": "oldest"}, headers=alice).json()
