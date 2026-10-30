@@ -63,6 +63,8 @@ Then open http://localhost:8000. Data is kept in a named volume.
 
 ### Cloud Deployment (Render / Railway / Docker)
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)
+
 This application is ready for 1-click cloud deployment on platforms supporting persistent WebSockets and background worker loops:
 
 - **Render (Free Web Service)**:
