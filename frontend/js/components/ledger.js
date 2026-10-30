@@ -20,7 +20,7 @@ export function initLedger() {
 }
 
 export function renderLedger(stats, isSupervisor) {
-  document.getElementById("scope-title").textContent = isSupervisor ? "All requests (Supervisor Monitor)" : "Your requests";
+  document.getElementById("scope-title").textContent = isSupervisor ? "All requests (Supervisor Monitor)" : "Your requests (Operator View)";
   if (!stats) return;
   ORDER.forEach(([key], i) => {
     counts().querySelector(`[data-count="${key}"]`).textContent = stats[key];

@@ -48,7 +48,11 @@
       </div>
       <div class="topbar-right">
         <span id="conn" class="conn" data-state="connecting" role="status" aria-live="polite"><i></i><span>Connecting</span></span>
-        <span class="user"><b id="user-name"></b> <small id="user-role"></small></span>
+        <div class="user-info" id="user-info">
+          <span class="user-label">Logged in as:</span>
+          <b id="user-name"></b>
+          <span id="user-role" class="role-badge"></span>
+        </div>
         <button id="logout" class="btn btn-quiet" type="button">Sign out</button>
       </div>
     </header>

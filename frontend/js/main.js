@@ -248,7 +248,10 @@ async function enterApp(user, token) {
   setToken(token);
   store.set({ user, token, items: [], total: 0, page: 1, pages: 1, filters: { ...EMPTY_FILTERS }, stats: null, conn: "connecting" });
   $("user-name").textContent = user.full_name;
-  $("user-role").textContent = user.role.toLowerCase();
+  const roleEl = $("user-role");
+  roleEl.textContent = user.role === "SUPERVISOR" ? "Supervisor" : "Operator";
+  roleEl.setAttribute("data-role", user.role);
+  roleEl.title = user.role === "SUPERVISOR" ? "Supervisor: monitoring all requests" : "Operator: managing own requests";
   $("new-request").hidden = user.role === "SUPERVISOR";
   showView(true);
   startLive();
