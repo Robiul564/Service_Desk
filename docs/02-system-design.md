@@ -280,8 +280,9 @@ React (better for a larger UI, unnecessary here).
 
 - Passwords: PBKDF2-HMAC-SHA256, per-user salt, constant-time comparison.
 - Tokens: HMAC-SHA256 signed, expire after `TOKEN_TTL_MINUTES`. Change `SECRET_KEY` outside development.
+- Login rate limiting: sliding-window counter per client IP (10 attempts / 60 s). Exceeding the limit returns HTTP 429 with a `Retry-After` header. The counter resets on a successful login.
+- WebSocket authentication: the client calls `POST /api/auth/ws-ticket` (over an already-authenticated HTTPS session) to exchange its Bearer token for a 30-second single-use ticket. The WebSocket URL carries only the ticket (`?ticket=…`). Even if the ticket appears in an access log it cannot be replayed: the server deletes it on first use and rejects any duplicate. The long-lived Bearer token is never exposed in a URL.
 - Authorisation lives in the service layer so it cannot be bypassed by a new router.
 - No string-built SQL; user search text has `%` and `_` escaped.
 - UI never inserts server text as HTML.
-- Known gaps (out of scope, noted honestly): no login rate limiting, no refresh tokens, token kept in
-  `localStorage`, token passed in the WebSocket query string.
+- Known remaining gaps (out of scope, noted honestly): no refresh tokens, token kept in `localStorage`.

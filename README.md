@@ -8,7 +8,7 @@ with no polling and no page refresh.
 - Frontend: vanilla JavaScript (ES modules), no build step
 - Real time: native WebSockets
 - Concurrency: asyncio worker pool with a priority queue, database calls offloaded to threads
-- Extras: role-based access, automated tests, Docker, GitHub Actions CI, health endpoint, request logging
+- Extras: role-based access, login rate limiting, WebSocket ticket auth, automated tests, Docker, GitHub Actions CI, health endpoint, request logging
 
 Documents for the assessment:
 
@@ -188,6 +188,7 @@ Live, try-it-out documentation is at `/docs`.
 |--------|------|-------------|
 | POST | `/auth/login` | Body `{username, password}` returns `{token, user}` |
 | GET | `/auth/me` | Current user |
+| POST | `/auth/ws-ticket` | Returns a 30-second single-use `{ticket}` for the WebSocket connection |
 | GET | `/requests` | List. Query: `status`, `priority`, `category`, `q`, `sort` (`newest`, `oldest`, `priority`, `progress`), `page`, `page_size` (1-100, default 10) |
 | POST | `/requests` | Create. Body below. Returns `201` |
 | GET | `/requests/stats` | `{total, pending, in_progress, completed, failed, cancelled, avg_completion_seconds}` |
@@ -235,7 +236,10 @@ Statuses: `PENDING`, `IN_PROGRESS`, `COMPLETED`, `FAILED`, `CANCELLED`.
 
 ## 7. WebSocket events
 
-Connect to `ws://localhost:8000/ws?token=<token>`. An invalid token is closed with code `4401`.
+Connect to `ws://localhost:8000/ws?ticket=<ticket>` (preferred) or `ws://localhost:8000/ws?token=<token>` (legacy).
+Obtain a ticket first with `POST /api/auth/ws-ticket`. The ticket is single-use and valid for 30 seconds,
+so it cannot become a persistent secret even if it appears in an access log.
+An invalid credential is closed with code `4401`.
 Every message is `{"type": string, "data": any, "ts": ISO-8601}`.
 
 | Event | Sent when | `data` |
