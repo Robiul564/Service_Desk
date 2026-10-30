@@ -249,6 +249,7 @@ async function enterApp(user, token) {
   store.set({ user, token, items: [], total: 0, page: 1, pages: 1, filters: { ...EMPTY_FILTERS }, stats: null, conn: "connecting" });
   $("user-name").textContent = user.full_name;
   $("user-role").textContent = user.role.toLowerCase();
+  $("new-request").hidden = user.role === "SUPERVISOR";
   showView(true);
   startLive();
   await Promise.all([loadList(), loadStats()]);

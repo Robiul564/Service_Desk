@@ -24,7 +24,7 @@ background**, and **supervisors watch everything move in real time**, without an
 | Role | Description | Can do |
 |------|-------------|--------|
 | **Operator** | Front-line staff who take requests from customers | Submit requests; see, edit (while pending), cancel and retry **their own** requests |
-| **Supervisor** | Team leads who monitor throughput | Everything an operator can, but across **all** requests |
+| **Supervisor** | Team leads who monitor throughput | Monitor all requests across the organisation in real time; inspect details and audit trails; cancel or retry any request |
 | **Processing engine** | Internal actor (background workers) | Moves requests through the processing steps and records progress |
 
 ### Assumptions
