@@ -279,7 +279,7 @@ The SQLite file lives at `backend/data/service_requests.db`; delete it to start 
 
 ## 9. Testing
 
-`pytest` runs 24 tests against the real app (real HTTP, real WebSocket, real background workers, temporary database):
+`pytest` runs 110 tests across 4 test suites against the real app (real HTTP, real WebSocket, real background workers, temporary database):
 
 | Area | Examples |
 |------|----------|
@@ -294,6 +294,6 @@ CI (`.github/workflows/ci.yml`) runs them on Python 3.11 and 3.12 and builds the
 
 ## 10. Possible next steps
 
-Login rate limiting and refresh tokens, Redis pub/sub for multi-instance fan-out, a shared queue
+Refresh tokens, Redis pub/sub for multi-instance fan-out, a shared queue
 (`SELECT ... FOR UPDATE SKIP LOCKED`), Alembic migrations, user administration, pagination by cursor, end-to-end
 browser tests.

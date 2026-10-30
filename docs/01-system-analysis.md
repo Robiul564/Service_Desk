@@ -121,7 +121,7 @@ transitions (worker progress, cancel, retry), which keeps the data consistent an
 | **Usability** | A new user can submit a request in under a minute | Short form, inline validation, plain-language errors, keyboard-operable list and dialogs |
 | **Accessibility** | Usable with keyboard and screen readers | Labelled inputs, `aria-invalid`/`role=alert` errors, focus management for drawer/dialog, visible focus, reduced-motion support, status shown as text not just colour |
 | **Responsive design** | Works from phone to desktop | Fluid grid, rows collapse to a stacked layout under 760 px |
-| **Maintainability** | Easy to change and test | Layered backend (router, service, repository), configuration in one place, 24 automated tests, small modules |
+| **Maintainability** | Easy to change and test | Layered backend (router, service, repository), configuration in one place, 110 automated tests, small modules |
 | **Observability** | Problems can be diagnosed | Structured request logs with timings, worker logs, `/api/health` with queue depth and connection counts |
 | **Availability** | Single-instance uptime with fast recovery | Container image with health check, restart-safe state |
 | **Portability** | Runs anywhere with Python or Docker | No build step for the frontend, SQLite by default, Dockerfile and compose file |
