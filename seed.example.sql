@@ -35,3 +35,4 @@ insert into public.workers (
     NULL, 'In Office (Not Submitted)', NULL, 700000
   )
 on conflict do nothing;
+
