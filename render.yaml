@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: passport-desk
+    runtime: static
+    buildCommand: bash ./render-build.sh
+    staticPublishPath: ./dist
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false

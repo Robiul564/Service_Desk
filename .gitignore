@@ -1,0 +1,13 @@
+/dist/
+/seed.sql
+.env
+.env.*
+!.env.example
+*-backup-*.json
+*.xls
+*.xlsx
+node_modules/
+.DS_Store
+Thumbs.db
+passport-desk/
+

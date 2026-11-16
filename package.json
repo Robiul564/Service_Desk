@@ -1,0 +1,23 @@
+{
+  "name": "passport-desk",
+  "version": "1.0.0",
+  "description": "Industrial-grade Overseas Employment, Agency Submission & Passport Lifecycle Management System",
+  "type": "module",
+  "main": "app.js",
+  "scripts": {
+    "start": "python -m http.server 3000",
+    "dev": "python -m http.server 3000",
+    "test": "node tests/mrz.test.mjs"
+  },
+  "keywords": [
+    "passport-management",
+    "overseas-employment",
+    "manpower-agency",
+    "mrz-scanner",
+    "pwa",
+    "offline-first",
+    "zero-data-loss"
+  ],
+  "author": "Passport Desk",
+  "license": "MIT"
+}

@@ -1,0 +1,13 @@
+{
+  "name": "Passport Desk",
+  "short_name": "Passport Desk",
+  "description": "Offline-ready Bangladesh to Malaysia recruitment office records",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f3f5f1",
+  "theme_color": "#14532d",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
