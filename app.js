@@ -1471,11 +1471,6 @@ function workerCard(row) {
   </article>`;
 }
 
-function selectFilter(id, label, values) {
-  const options = values.map(value => `<option value="${esc(value)}">${esc(value)}</option>`).join("");
-  return `<select id="${id}" aria-label="${esc(label)}"><option value="">${esc(label)}</option>${options}</select>`;
-}
-
 function renderWorkers() {
   const previous = {
     query: $("#worker-search")?.value || "",
@@ -1759,6 +1754,14 @@ function renderData() {
 
     <section class="card"><h3>Backup and restore</h3><p class="meta">Backups include cloud and local records, including trash and history. They contain sensitive passport data; store them privately. Last backup: ${state.lastBackup ? new Date(state.lastBackup).toLocaleDateString() : "never"}.</p><p class="meta">Spreadsheet backup downloads an .xlsx snapshot for manual upload to a private Google Drive; it is not automatic sync and cannot be restored here.</p><div class="button-row"><button id="backup-button" class="primary">Download full backup</button><button id="sheet-backup-button" class="secondary">Spreadsheet backup (.xlsx)</button></div><div class="button-row"><button id="restore-button">Restore JSON backup</button></div>${Date.now() - state.lastBackup > 7 * 86400000 ? '<p class="warning">Weekly reminder: download and store a backup securely.</p>' : ""}</section>
     <section class="card"><h3>Trash (${trash.length})</h3>${trash.slice(0, 50).map(({ table, row }) => `<div class="record-title card"><span>${esc(table)} · ${esc(row.name || row.wid || row.id)}</span><button data-restore="${esc(table)}:${esc(row.id)}">Restore</button></div>`).join("") || '<p class="empty">Trash is empty.</p>'}</section>
+    <section class="card">
+      <h3>🧪 Sample Testing Data</h3>
+      <p class="meta">Load synthetic demo records (with zero personal data) to preview dashboard stats, agency manifests, passport returns, and PDF downloads.</p>
+      <div class="button-row">
+        <button type="button" id="btn-seed-sample-data" class="secondary">📥 Load Synthetic Sample Records</button>
+      </div>
+    </section>
+
     <section class="card"><h3>Session</h3><p class="meta">Role: ${esc(state.role || "none")} · App data is stored in this browser and synced to Supabase when online.</p><button id="sign-out-secondary">Sign out</button></section>${adminPanel}`;
   
   $("#btn-save-cloud-config")?.addEventListener("click", async () => {
@@ -1799,6 +1802,12 @@ function renderData() {
   $("#backup-button").onclick = downloadBackup;
   $("#sheet-backup-button").onclick = downloadSpreadsheetBackup;
   $("#restore-button").onclick = () => $("#restore-input").click();
+  $("#btn-seed-sample-data")?.addEventListener("click", async () => {
+    if (!window.confirm("Load synthetic sample records for testing? This will populate sample candidates, companies, and agent pairs.")) return;
+    await seedDemoData();
+    toast("Synthetic sample records loaded.");
+    render();
+  });
   $("#create-user")?.addEventListener("click", async () => {
     const email = $("#new-user-email").value.trim();
     const password = $("#new-user-password").value;
@@ -2260,55 +2269,39 @@ async function readPhoto(file) {
 
 async function seedDemoData() {
   const sampleAgents = [
-    { id: "AGT-001", ml_name: "Mohammad Shakil", ml_phone: "60176282795", bd_name: "Lipon Bapary", bd_phone: "01641036337", status: "Active" },
-    { id: "AGT-004", ml_name: "Aminul Islam Limon", ml_phone: "60142067858", bd_name: "Md. Emon", bd_phone: "01624103282", status: "Active" },
-    { id: "AGT-008", ml_name: "Juiccy Rubel", ml_phone: "60142092146", bd_name: "Rubel Agent", bd_phone: "01711223344", status: "Active" },
-    { id: "AGT-021", ml_name: "MS Rhul Amin", ml_phone: "60167367590", bd_name: "Rifat Bepari", bd_phone: "01822334455", status: "Active" },
-    { id: "AGT-027", ml_name: "Rashed", ml_phone: "60179076945", bd_name: "Habibur Agent", bd_phone: "01933445566", status: "Active" }
+    { id: "AGT-001", ml_name: "Kuala Lumpur Partner A", ml_phone: "60120000001", bd_name: "Dhaka Agent A", bd_phone: "01700000001", status: "Active" },
+    { id: "AGT-002", ml_name: "Penang Partner B", ml_phone: "60120000002", bd_name: "Chittagong Agent B", bd_phone: "01700000002", status: "Active" },
+    { id: "AGT-003", ml_name: "Johor Partner C", ml_phone: "60120000003", bd_name: "Sylhet Agent C", bd_phone: "01700000003", status: "Active" }
   ];
   for (const ag of sampleAgents) {
-    await saveLocal("agents", { ...ag, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, false);
+    if (!state.rows.agents.some(a => a.id === ag.id)) {
+      await saveLocal("agents", { ...ag, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, false);
+    }
   }
 
   const sampleCompanies = [
-    { name: "ANCOM", vacancy: 100, fee: 700000, status: "Active" },
-    { name: "MR. D.I.Y", vacancy: 50, fee: 700000, status: "Active" },
-    { name: "ICP", vacancy: 53, fee: 700000, status: "Active" },
-    { name: "PLATINUM PLASIC", vacancy: 27, fee: 700000, status: "Active" }
+    { name: "Apex Manufacturing Ltd", vacancy: 50, fee: 700000, status: "Active" },
+    { name: "Global Logistics Berhad", vacancy: 40, fee: 700000, status: "Active" },
+    { name: "Crest Engineering Works", vacancy: 25, fee: 700000, status: "Active" }
   ];
   for (const co of sampleCompanies) {
-    await saveLocal("companies", { ...co, id: uniqueId("companies"), created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, false);
+    if (!state.rows.companies.some(c => c.name === co.name)) {
+      await saveLocal("companies", { ...co, id: uniqueId("companies"), created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, false);
+    }
   }
 
   const sampleWorkers = [
-    { wid: "WRK-001", name: "OSMAN GONI", phone: "01712345678", passport_no: "A09479295", passport_expiry: "2036-03-01", agent_id: "AGT-001", company: "ANCOM", passenger_status: "In Processing", passport_status: "Received", photo_status: "Pending", bgmt_status: "Pending", medical_status: "Fit", submission_agency: "Eastern Agency", submission_status: "Submitted to Agency", submission_date: "2026-11-10", contract_fee: 700000, notes: "AMIN TOURS" },
-    { wid: "WRK-002", name: "MD JASIM CHOKDER", phone: "01812345678", passport_no: "A03846081", passport_expiry: "2032-08-05", agent_id: "AGT-001", company: "MR. D.I.Y", passenger_status: "New", passport_status: "Received", photo_status: "Received", bgmt_status: "Pending", medical_status: "Pending", submission_agency: "Al-Razi Recruiting", submission_status: "Submitted to Agency", submission_date: "2026-11-12", contract_fee: 700000, notes: "AMIN TOURS" },
-    { wid: "WRK-003", name: "SAMIM HAWLADER", phone: "01912345678", passport_no: "A23436548", passport_expiry: "2036-08-29", agent_id: "AGT-001", company: "ICP", passenger_status: "Completed / Deployed", passport_status: "Received", photo_status: "Received", bgmt_status: "Received", medical_status: "Fit", submission_agency: "Skyline Travels & Tours", submission_status: "Visa Stamped", submission_date: "2026-10-25", contract_fee: 700000, notes: "Deployed successfully" },
-    { wid: "WRK-004", name: "JISAN BEPARI", phone: "01612345678", passport_no: "A20855343", passport_expiry: "2027-04-13", agent_id: "AGT-004", company: "ANCOM", passenger_status: "In Processing", passport_status: "Received", photo_status: "Received", bgmt_status: "Pending", medical_status: "Fit", submission_agency: "Eastern Agency", submission_status: "Submitted to Agency", submission_date: "2026-11-14", contract_fee: 700000, notes: "Calling visa approved" },
-    { wid: "WRK-005", name: "ARIF SHEIKH", phone: "01512345678", passport_no: "A21935371", passport_expiry: "2036-03-16", agent_id: "AGT-008", company: "MR. D.I.Y", passenger_status: "New", passport_status: "Pending", photo_status: "Pending", bgmt_status: "Pending", medical_status: "Pending", submission_status: "Taken Back by Agent", passport_withdrawn_date: "2026-11-16", passport_withdrawn_by: "Rubel Agent (AGT-008) · 📞 01711223344", passport_withdrawn_reason: "Outside Medical / Gamca Test", passport_withdrawn_notes: "Expected return by Nov 20", contract_fee: 700000, notes: "Original passport taken back by agent for Gamca medical" },
-    { wid: "WRK-006", name: "MD MASUM MOLLA", phone: "01798765432", passport_no: "A21285081", passport_expiry: "2035-12-27", agent_id: "AGT-021", company: "ICP", passenger_status: "In Processing", passport_status: "Received", photo_status: "Received", bgmt_status: "Received", medical_status: "Fit", submission_agency: "Delta International", submission_status: "Submitted to Agency", submission_date: "2026-11-15", contract_fee: 700000, notes: "Biometrics completed" },
-    { wid: "WRK-007", name: "JASIM MADBAR", phone: "01898765432", passport_no: "A08825886", passport_expiry: "2034-08-06", agent_id: "AGT-027", company: "PLATINUM PLASIC", passenger_status: "New", passport_status: "Received", photo_status: "Pending", bgmt_status: "Pending", medical_status: "Pending", submission_status: "In Office (Not Submitted)", contract_fee: 700000, notes: "Medical test due next week" }
+    { wid: "WRK-001", name: "SAMPLE CANDIDATE ALAM", phone: "01700000001", passport_no: "A00000001", passport_expiry: "2034-01-01", agent_id: "AGT-001", company: "Apex Manufacturing Ltd", passenger_status: "In Processing", passport_status: "Received", photo_status: "Received", bgmt_status: "Pending", medical_status: "Fit", submission_agency: "Eastern Agency", submission_status: "Submitted to Agency", submission_date: "2026-11-10", contract_fee: 700000, notes: "Sample test record" },
+    { wid: "WRK-002", name: "SAMPLE CANDIDATE HASAN", phone: "01700000002", passport_no: "A00000002", passport_expiry: "2033-05-15", agent_id: "AGT-001", company: "Global Logistics Berhad", passenger_status: "New", passport_status: "Received", photo_status: "Pending", bgmt_status: "Pending", medical_status: "Pending", submission_status: "In Office (Not Submitted)", contract_fee: 700000, notes: "Passport in office safe" },
+    { wid: "WRK-003", name: "SAMPLE CANDIDATE RAHMAN", phone: "01700000003", passport_no: "A00000003", passport_expiry: "2035-09-20", agent_id: "AGT-002", company: "Crest Engineering Works", passenger_status: "Completed / Deployed", passport_status: "Received", photo_status: "Received", bgmt_status: "Received", medical_status: "Fit", submission_agency: "Skyline Travels & Tours", submission_status: "Visa Stamped", submission_date: "2026-10-25", contract_fee: 700000, notes: "Visa stamped demo" },
+    { wid: "WRK-004", name: "SAMPLE CANDIDATE KABIR", phone: "01700000004", passport_no: "A00000004", passport_expiry: "2032-11-12", agent_id: "AGT-003", company: "Apex Manufacturing Ltd", passenger_status: "New", passport_status: "Pending", photo_status: "Pending", bgmt_status: "Pending", medical_status: "Pending", submission_status: "Taken Back by Agent", passport_withdrawn_date: "2026-11-16", passport_withdrawn_by: "Dhaka Agent A (AGT-001)", passport_withdrawn_reason: "Outside Medical / Gamca Test", passport_withdrawn_notes: "Expected return next week", contract_fee: 700000, notes: "Withdrawn passport demo" }
   ];
 
   for (const w of sampleWorkers) {
-    const id = uniqueId("workers");
-    await saveLocal("workers", { ...w, id, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, false);
-  }
-
-  const wrk1 = state.rows.workers.find(w => w.wid === "WRK-001");
-  if (wrk1) {
-    await saveLocal("payments", {
-      id: uniqueId("payments"),
-      worker_id: wrk1.id,
-      stage: "Advance",
-      amount: 50000,
-      paid_at: today(),
-      method: "Cash",
-      receipt_no: "REC-2026-001",
-      collector: "Office Counter",
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    }, false);
+    if (!state.rows.workers.some(item => item.passport_no === w.passport_no)) {
+      const id = uniqueId("workers");
+      await saveLocal("workers", { ...w, id, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, false);
+    }
   }
 }
 
@@ -2402,7 +2395,6 @@ async function boot() {
     $("#setup-view").innerHTML = `<h2>Offline storage unavailable</h2><p class="error">${esc(error.message)} Use a current browser with IndexedDB enabled.</p>`;
     return;
   }
-  if (document.documentElement.dataset.theme === "dark") document.documentElement.dataset.theme = "dark";
   const storedTheme = storageRead("passport-desk-theme");
   if (storedTheme) document.documentElement.dataset.theme = storedTheme;
   $("#theme-toggle").onclick = () => {
@@ -2417,10 +2409,11 @@ async function boot() {
     button.disabled = true;
     const errorP = $("#login-error");
     if (errorP) { errorP.textContent = ""; errorP.style.display = "none"; }
-    const email = $("#login-email").value.trim() || "admin@passportdesk.com";
+    const email = $("#login-email").value.trim() || "admin@office.local";
     const password = $("#login-password").value;
     try {
       if (configured && state.supabase) {
+        if (!email) throw new Error("Please enter your account email.");
         const { error } = await state.supabase.auth.signInWithPassword({ email, password });
         if (error) {
           if (errorP) { errorP.textContent = error.message; errorP.style.display = "block"; }
@@ -2435,10 +2428,6 @@ async function boot() {
 
         if (navigator.storage?.persist) {
           try { await navigator.storage.persist(); } catch (_) {}
-        }
-
-        if (!state.rows.workers || state.rows.workers.length === 0) {
-          await seedDemoData();
         }
 
         showAuth();
@@ -2471,9 +2460,6 @@ async function boot() {
   if (savedUserJson && savedRole && !state.user) {
     state.user = safeJson(savedUserJson);
     state.role = savedRole;
-    if (!state.rows.workers || state.rows.workers.length === 0) {
-      await seedDemoData();
-    }
   }
   document.addEventListener("click", async event => {
     const copyBtn = event.target.closest("[data-copy]");

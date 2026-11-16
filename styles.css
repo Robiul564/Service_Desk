@@ -463,7 +463,6 @@ label input, label select, label textarea {
   gap: 8px;
   overflow-x: auto;
   scrollbar-width: none;
-  -webkit-overflow-scrolling: touch;
   padding: 8px 2px 4px;
   margin-top: 4px;
 }
@@ -812,7 +811,6 @@ label input, label select, label textarea {
 /* Bottom Sheet Modal Dialogs */
 .record-dialog {
   width: min(100%, 640px);
-  max-width: 640px;
   max-height: 92dvh;
   border: 0;
   border-radius: 22px 22px 0 0;
@@ -821,6 +819,70 @@ label input, label select, label textarea {
   background: var(--bg);
   color: var(--ink);
   box-shadow: var(--shadow-lg);
+}
+
+.dialog-modal-sm {
+  width: min(100%, 480px);
+}
+
+.dialog-form-pad {
+  margin-top: 6px;
+}
+
+.muted-form-desc {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.agency-manage-section {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.agency-manage-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.section-micro-title {
+  font-size: 13px;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ink);
+}
+
+.agency-manage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.takeback-info-box {
+  background: color-mix(in srgb, var(--amber) 12%, var(--panel));
+  border: 1px solid var(--amber);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.button-row-stack {
+  flex-direction: column;
+  gap: 8px;
+}
+
+.btn-takeback {
+  background: #b45309;
+  border-color: #b45309;
+  color: #fff;
+  font-weight: 750;
 }
 
 .record-dialog::backdrop {
@@ -868,7 +930,6 @@ label input, label select, label textarea {
   grid-template-columns: 1fr;
   gap: 10px;
   overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
   max-height: 54dvh;
   padding: 4px 2px;
 }
@@ -1184,7 +1245,6 @@ label input, label select, label textarea {
 
 .table-wrap {
   overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
 }
 
 /* Tablet & Desktop Layout */
@@ -1210,5 +1270,15 @@ label input, label select, label textarea {
     width: min(720px, 100%);
     transform: translateX(-50%);
     border-radius: 16px 16px 0 0;
+  }
+}
+
+/* Accessibility: Respect user preference for reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
