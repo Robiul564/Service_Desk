@@ -13,6 +13,7 @@ import {
 } from "../mrz.mjs";
 import {
   analyzeFrameQuality,
+  locateMrzInGrayscale,
   estimateSkewAngle,
   rotateGrayscale,
   denoise3x3Median,
@@ -492,5 +493,35 @@ test("Per-field accuracy benchmark across diverse TD3 passport corpus (100% accu
 
   for (const f of fields) {
     assert.equal(stats[f].pass, stats[f].total);
+  }
+});
+
+test("CV auto-locator: finds 2-line MRZ block anywhere in frame (top, middle, or bottom) without box alignment", () => {
+  const W = 320;
+  const H = 240;
+
+  for (const [label, yStartFrac] of [["top", 0.12], ["middle", 0.42], ["bottom", 0.72]]) {
+    const frame = new Uint8Array(W * H);
+    frame.fill(215);
+
+    const r1y0 = Math.round(H * yStartFrac);
+    const r1y1 = r1y0 + 12;
+    const r2y0 = r1y1 + 8;
+    const r2y1 = r2y0 + 12;
+
+    for (let y = 0; y < H; y += 1) {
+      const inMrz = (y >= r1y0 && y <= r1y1) || (y >= r2y0 && y <= r2y1);
+      if (!inMrz) continue;
+      for (let x = 24; x < W - 24; x += 1) {
+        if (x % 6 < 3) frame[y * W + x] = 20;
+      }
+    }
+
+    const box = locateMrzInGrayscale(frame, W, H);
+    const detTop = box.y * H;
+    const detBot = (box.y + box.h) * H;
+    assert.ok(detTop <= r1y0 + 4, `[${label}] detected top ${detTop} should cover row1 top ${r1y0}`);
+    assert.ok(detBot >= r2y1 - 4, `[${label}] detected bottom ${detBot} should cover row2 bottom ${r2y1}`);
+    assert.ok(box.confidence > 0.05, `[${label}] confidence should be positive`);
   }
 });

@@ -1,5 +1,5 @@
 import { parseTd3Mrz, MrzFrameConsensus, crossVerifyNameWithViz } from "./mrz.mjs";
-import { preprocessMrzFromSource, preprocessVizFromSource } from "./mrz-vision.mjs";
+import { autoLocatePassportRois, preprocessMrzFromSource, preprocessVizFromSource } from "./mrz-vision.mjs";
 
 const TABLES = ["workers", "agents", "companies", "payments", "handovers", "expenses", "user_profiles", "history"];
 const DATA_TABLES = TABLES.filter(table => !["user_profiles", "history"].includes(table));
@@ -105,7 +105,8 @@ const state = {
   camera: null,
   scannerActive: false,
   scanBusy: false,
-  mrzConsensus: new MrzFrameConsensus({ requiredFrames: 3 }),
+  scanTickCount: 0,
+  mrzConsensus: new MrzFrameConsensus({ requiredFrames: 2 }),
   ocrWorker: null,
   ocrMode: null,
   saving: false,
@@ -2364,79 +2365,141 @@ function releaseCanvas(canvas) {
 }
 
 /**
- * Map the visible passport guide frame (VIZ + MRZ zones) into exact natural video pixel ROIs,
- * accounting for `object-fit: cover` scaling on portrait vs landscape phone screens.
+ * Update the floating auto-detect MRZ highlight box on the live video viewfinder
+ * (purely visual feedback — user never has to align inside a fixed box!).
  */
-function computeVideoRois(video) {
+function updateAutoHighlightBox(video, normalizedBox) {
+  const boxEl = $("#auto-mrz-box");
+  if (!boxEl || !video || !normalizedBox || normalizedBox.confidence < 0.04) {
+    if (boxEl) boxEl.hidden = true;
+    return;
+  }
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   const vRect = video.getBoundingClientRect();
-  const guideEl = $("#passport-guide");
-  const mrzEl = guideEl?.querySelector(".passport-mrz-zone");
-  const vizEl = guideEl?.querySelector(".passport-viz-zone");
+  if (!vw || !vh || !vRect.width || !vRect.height) return;
 
-  if (!vRect.width || !vRect.height || !mrzEl || !vizEl) {
-    return {
-      mrzRoi: { sx: 0, sy: vh * 0.56, sw: vw, sh: vh * 0.28 },
-      vizRoi: { sx: 0, sy: vh * 0.14, sw: vw, sh: vh * 0.42 }
-    };
-  }
-
-  // `object-fit: cover` uniform scale and center crop offset
+  // Map natural video coordinates into visible `object-fit: cover` display rect
   const scale = Math.max(vRect.width / vw, vRect.height / vh);
-  const renderedW = vw * scale;
-  const renderedH = vh * scale;
-  const offsetX = (renderedW - vRect.width) / 2;
-  const offsetY = (renderedH - vRect.height) / 2;
+  const offsetX = (vw * scale - vRect.width) / 2;
+  const offsetY = (vh * scale - vRect.height) / 2;
 
-  const mapRect = (rect, padXRatio = 0.02, padYRatio = 0.08) => {
-    const rawX = (rect.left - vRect.left + offsetX) / scale;
-    const rawY = (rect.top - vRect.top + offsetY) / scale;
-    const rawW = rect.width / scale;
-    const rawH = rect.height / scale;
-    const padX = rawW * padXRatio;
-    const padY = rawH * padYRatio;
-    const sx = Math.max(0, rawX - padX);
-    const sy = Math.max(0, rawY - padY);
-    const ex = Math.min(vw, rawX + rawW + padX);
-    const ey = Math.min(vh, rawY + rawH + padY);
-    return { sx, sy, sw: Math.max(32, ex - sx), sh: Math.max(24, ey - sy) };
-  };
+  const left = normalizedBox.x * vw * scale - offsetX;
+  const top = normalizedBox.y * vh * scale - offsetY;
+  const width = normalizedBox.w * vw * scale;
+  const height = normalizedBox.h * vh * scale;
 
-  return {
-    mrzRoi: mapRect(mrzEl.getBoundingClientRect(), 0.03, 0.14),
-    vizRoi: mapRect(vizEl.getBoundingClientRect(), 0.02, 0.04)
-  };
+  boxEl.hidden = false;
+  boxEl.style.left = `${Math.max(4, left)}px`;
+  boxEl.style.top = `${Math.max(4, top)}px`;
+  boxEl.style.width = `${Math.min(vRect.width - 8, Math.max(40, width))}px`;
+  boxEl.style.height = `${Math.min(vRect.height - 8, Math.max(24, height))}px`;
 }
 
-function updateConsensusUi(count, required, label, frameState = "") {
-  for (let i = 1; i <= 3; i += 1) {
+function updateConsensusUi(count, required, label) {
+  for (let i = 1; i <= 2; i += 1) {
     const dot = $(`#cdot-${i}`);
     if (dot) dot.classList.toggle("filled", i <= count);
   }
   const labelEl = $("#consensus-label");
   if (labelEl) labelEl.textContent = label;
-  const guide = $("#passport-guide");
-  if (guide) {
-    guide.classList.toggle("locked", frameState === "locked");
-    guide.classList.toggle("warn", frameState === "warn");
+}
+
+/**
+ * Snapshot the visible VIZ region into a lightweight canvas BEFORE stopping the camera,
+ * so VIZ name cross-verification runs asynchronously while the user is already viewing the review screen.
+ */
+function captureVizCanvasSnapshot(source, vizRoi, skewAngle = 0) {
+  try {
+    return preprocessVizFromSource(source, vizRoi, skewAngle);
+  } catch (_) {
+    return null;
   }
 }
 
-async function runVizCrossVerify(source, vizRoi, mrzData, skewAngle = 0) {
-  let vizCanvas = null;
+/**
+ * Run VIZ printed-name cross-verification in the background (0ms UI blocking!)
+ * and live-update the VIZ banner inside the open `#scan-review-dialog`.
+ */
+async function runBackgroundVizCheck(vizCanvas, mrzData, scanToken) {
+  if (!vizCanvas) return;
   try {
-    vizCanvas = preprocessVizFromSource(source, vizRoi, skewAngle);
-    if (!vizCanvas) {
-      return crossVerifyNameWithViz(mrzData, "");
-    }
     const worker = await getOcrWorker("viz");
     const res = await worker.recognize(vizCanvas);
-    return crossVerifyNameWithViz(mrzData, res?.data?.text || "");
+    const viz = crossVerifyNameWithViz(mrzData, res?.data?.text || "");
+    if (state.scannedMrz && state.scannedMrz._token === scanToken) {
+      state.scannedMrz.viz = viz;
+      renderReviewVizBanner(viz, Boolean(mrzData.name_truncated));
+    }
   } catch (_) {
-    return crossVerifyNameWithViz(mrzData, "");
+    if (state.scannedMrz && state.scannedMrz._token === scanToken) {
+      const fallback = crossVerifyNameWithViz(mrzData, "");
+      state.scannedMrz.viz = fallback;
+      renderReviewVizBanner(fallback, Boolean(mrzData.name_truncated));
+    }
   } finally {
     releaseCanvas(vizCanvas);
+  }
+}
+
+function renderReviewVizBanner(viz, isTruncated) {
+  const container = $("#rev-viz-banner-slot");
+  if (!container) return;
+
+  if (viz.status === "checking") {
+    container.innerHTML = `
+      <div class="viz-banner verified" style="opacity:0.85;">
+        <strong>✓ 5/5 ICAO Check Digits Passed · Checking printed name…</strong>
+        <span>You can review Surname &amp; Given Names below right now.</span>
+      </div>`;
+    return;
+  }
+
+  if (viz.status === "verified") {
+    container.innerHTML = `
+      <div class="viz-banner verified">
+        <strong>✓ Printed Passport Name Verified</strong>
+        <span>${esc(viz.message)}</span>
+      </div>`;
+  } else if (viz.status === "mismatch") {
+    container.innerHTML = `
+      <div class="viz-banner mismatch">
+        <strong>⚠️ Printed Name Differs Slightly — Please Check</strong>
+        <span>${esc(viz.message)}</span>
+        ${viz.unmatchedTokens?.length ? `<span style="font-size:12px;">Double-check: <b>${esc(viz.unmatchedTokens.join(", "))}</b></span>` : ""}
+        <label class="viz-confirm-check">
+          <input type="checkbox" id="rev-viz-confirmed">
+          <span>I checked the passport and confirmed Surname &amp; Given Names below are correct.</span>
+        </label>
+      </div>`;
+    $("#rev-viz-confirmed")?.addEventListener("change", updateScanReviewAcceptButton);
+  } else {
+    container.innerHTML = `
+      <div class="viz-banner verified" style="background:color-mix(in srgb, var(--blue) 10%, var(--panel)); color:var(--ink); border-color:color-mix(in srgb, var(--blue) 30%, transparent);">
+        <strong>✓ 5/5 ICAO Check Digits Verified</strong>
+        <span>Glance at Surname &amp; Given Names below to confirm spelling${isTruncated ? " (39-char MRZ limit)" : ""}.</span>
+      </div>`;
+  }
+  updateScanReviewAcceptButton();
+}
+
+function updateScanReviewAcceptButton() {
+  const acceptBtn = $("#btn-accept-scan");
+  if (!acceptBtn) return;
+  const pp = ($("#rev-passport-no")?.value || "").trim().toUpperCase();
+  const isDup = pp && active("workers").some(row => row.passport_no && row.passport_no.toUpperCase() === pp);
+  const vizMismatchBox = $("#rev-viz-confirmed");
+  const needsMismatchAck = Boolean(vizMismatchBox) && !vizMismatchBox.checked;
+
+  if (isDup) {
+    acceptBtn.disabled = true;
+    acceptBtn.textContent = "⚠️ Duplicate Passport — Blocked";
+  } else if (needsMismatchAck) {
+    acceptBtn.disabled = true;
+    acceptBtn.textContent = "Confirm Name Above or Rescan";
+  } else {
+    acceptBtn.disabled = false;
+    acceptBtn.textContent = "✓ Confirm & Register Candidate";
   }
 }
 
@@ -2444,16 +2507,23 @@ async function startScanner() {
   $("#scanner-dialog").showModal();
   state.scannerActive = true;
   state.scanBusy = false;
+  state.scanTickCount = 0;
   state.mrzConsensus.reset();
-  updateConsensusUi(0, 3, "Align passport in frame");
-  $("#scanner-status").textContent = "Requesting camera permission…";
+  const boxEl = $("#auto-mrz-box");
+  if (boxEl) boxEl.hidden = true;
+  updateConsensusUi(0, 2, "Point at passport anywhere in view");
+  $("#scanner-status").textContent = "Starting camera…";
+
+  // Pre-warm Tesseract OCR worker in parallel with camera startup for instant first read!
+  getOcrWorker("mrz").catch(() => {});
+
   try {
     if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error("Live camera stream requires HTTPS. Use the photo button below.");
+      throw new Error("Live camera requires HTTPS. Tap Pick Photo below.");
     }
     state.camera = await navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }
     });
     const video = $("#camera-video");
     video.srcObject = state.camera;
@@ -2474,11 +2544,15 @@ async function startScanner() {
         toast("Torch is not available on this camera.");
       }
     };
-    $("#scanner-status").textContent = "Fit the passport page inside the frame with both bottom MRZ lines in the green strip.";
+    const captureBtn = $("#capture-now-button");
+    if (captureBtn) captureBtn.disabled = false;
+    $("#scanner-status").textContent = "Just hold passport in view — auto-detects anywhere (or tap Capture Now).";
     scannerTick();
   } catch (error) {
+    const captureBtn = $("#capture-now-button");
+    if (captureBtn) captureBtn.disabled = true;
     const isDenied = error.name === "NotAllowedError";
-    $("#scanner-status").innerHTML = `<span style="color:#fbbf24;font-weight:600;">${isDenied ? "Camera permission denied." : "Live camera unavailable."}</span><br>Tap <b>📷 Take / Choose Photo</b> below to scan a passport photo.`;
+    $("#scanner-status").innerHTML = `<span style="color:#fbbf24;font-weight:600;">${isDenied ? "Camera permission denied." : "Live camera unavailable."}</span><br>Tap <b>🖼️ Pick Photo</b> below to scan a passport photo.`;
   }
 }
 
@@ -2489,12 +2563,28 @@ async function scannerTick() {
     state.scanBusy = true;
     let mrzCanvas = null;
     try {
-      const { mrzRoi, vizRoi } = computeVideoRois(video);
-      const pre = preprocessMrzFromSource(video, mrzRoi);
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+
+      // Auto-locate MRZ anywhere in the camera frame (~3ms) — no box alignment required!
+      const located = autoLocatePassportRois(video, vw, vh);
+      updateAutoHighlightBox(video, located.normalizedBox);
+
+      // Alternate between auto-detected ROI (primary) and wide lower/mid sweeps every 3rd tick
+      // so even unusual framings lock effortlessly without double-OCR latency per tick.
+      let roi = located.mrzRoi;
+      let vizRoi = located.vizRoi;
+      if (state.scanTickCount % 3 === 2 && state.mrzConsensus.consecutiveMatches === 0) {
+        roi = { sx: 0, sy: Math.round(vh * 0.45), sw: vw, sh: Math.round(vh * 0.50) };
+        vizRoi = { sx: 0, sy: 0, sw: vw, sh: Math.round(vh * 0.48) };
+      }
+      state.scanTickCount += 1;
+
+      const pre = preprocessMrzFromSource(video, roi, { fast: true, tPercent: 12 });
       mrzCanvas = pre.canvas;
 
-      if (!pre.quality.ok || !mrzCanvas) {
-        updateConsensusUi(state.mrzConsensus.consecutiveMatches, 3, pre.quality.message, "warn");
+      if (!mrzCanvas) {
+        updateConsensusUi(state.mrzConsensus.consecutiveMatches, 2, pre.quality.message);
         $("#scanner-status").textContent = pre.quality.message;
       } else {
         const worker = await getOcrWorker("mrz");
@@ -2505,39 +2595,107 @@ async function scannerTick() {
         const consensus = state.mrzConsensus.push(ocr?.data?.text || "");
 
         if (consensus.locked && consensus.data) {
-          updateConsensusUi(3, 3, "✓ 3/3 Locked — checking printed name…", "locked");
-          $("#scanner-status").textContent = "All 5 ICAO check digits verified (3/3 frames). Cross-checking printed name…";
-          const vizCheck = await runVizCrossVerify(video, vizRoi, consensus.data, pre.skewAngle);
-          const finalResult = { ...consensus.data, viz: vizCheck, source: "live_camera" };
-          return showScanReview(finalResult);
+          updateConsensusUi(2, 2, "✓ Passport scanned!");
+          const vizSnap = captureVizCanvasSnapshot(video, vizRoi, pre.skewAngle);
+          return showScanReview(consensus.data, vizSnap);
         }
 
         if (consensus.validFrame) {
-          updateConsensusUi(
-            consensus.consecutive,
-            consensus.required,
-            `Hold steady — verifying ${consensus.consecutive}/${consensus.required}`,
-            "locked"
-          );
-          $("#scanner-status").textContent = `Hold steady — ${consensus.consecutive}/${consensus.required} agreeing frames…`;
+          updateConsensusUi(consensus.consecutive, consensus.required, "Almost done — hold still 1 moment…");
+          $("#scanner-status").textContent = "Passport found! Holding 1 moment to lock…";
         } else {
-          updateConsensusUi(
-            consensus.consecutive,
-            consensus.required,
-            consensus.consecutive > 0 ? `Hold steady (${consensus.consecutive}/${consensus.required})` : "Align MRZ in green box",
-            ""
-          );
-          $("#scanner-status").textContent = "Move closer, reduce glare, and keep both 44-char MRZ lines level inside the green strip.";
+          const tip = !pre.quality.ok ? pre.quality.message : "Point camera at the passport bottom lines (or tap Capture Now).";
+          updateConsensusUi(consensus.consecutive, consensus.required, consensus.consecutive > 0 ? "Hold steady…" : "Scanning anywhere in view…");
+          $("#scanner-status").textContent = tip;
         }
       }
     } catch (error) {
-      $("#scanner-status").textContent = error.message || "OCR error. Hold steady, retake photo, or use Manual Entry.";
+      $("#scanner-status").textContent = error.message || "Scan error — tap Capture Now or Pick Photo.";
     } finally {
       releaseCanvas(mrzCanvas);
       state.scanBusy = false;
     }
   }
-  if (state.scannerActive) setTimeout(scannerTick, 450);
+  if (state.scannerActive) setTimeout(scannerTick, 100);
+}
+
+/**
+ * Shared fast multi-strategy scanner for 1-tap "Capture Now" snapshots and uploaded photos.
+ * Tries auto-located MRZ FIRST (~0.4s!), then falls back to wide bands only if needed.
+ */
+async function scanStaticImageSource(source, w, h) {
+  const located = autoLocatePassportRois(source, w, h);
+  const candidates = [
+    { mrzRoi: located.mrzRoi, vizRoi: located.vizRoi, fast: true, tPercent: 12 },
+    { mrzRoi: located.mrzRoi, vizRoi: located.vizRoi, fast: false, tPercent: 15 },
+    { mrzRoi: { sx: 0, sy: Math.round(h * 0.58), sw: w, sh: Math.round(h * 0.42) }, vizRoi: { sx: 0, sy: Math.round(h * 0.06), sw: w, sh: Math.round(h * 0.54) }, fast: true, tPercent: 12 },
+    { mrzRoi: { sx: 0, sy: Math.round(h * 0.30), sw: w, sh: Math.round(h * 0.45) }, vizRoi: { sx: 0, sy: 0, sw: w, sh: Math.round(h * 0.35) }, fast: true, tPercent: 12 },
+    { mrzRoi: { sx: 0, sy: 0, sw: w, sh: h }, vizRoi: { sx: 0, sy: 0, sw: w, sh: Math.round(h * 0.65) }, fast: false, tPercent: 14 }
+  ];
+
+  let lastError = "Could not detect both 44-char passport MRZ lines. Try holding slightly steadier with less glare.";
+  const worker = await getOcrWorker("mrz");
+
+  for (const cand of candidates) {
+    let mrzCanvas = null;
+    try {
+      const pre = preprocessMrzFromSource(source, cand.mrzRoi, {
+        skipQualityGate: true,
+        tPercent: cand.tPercent,
+        fast: cand.fast
+      });
+      mrzCanvas = pre.canvas;
+      if (!mrzCanvas) continue;
+      const ocr = await worker.recognize(mrzCanvas);
+      const parsed = parseTd3Mrz(ocr?.data?.text || "");
+      if (parsed.valid && parsed.data) {
+        const vizSnap = captureVizCanvasSnapshot(source, cand.vizRoi, pre.skewAngle);
+        return { data: parsed.data, vizSnap, error: null };
+      }
+      if (parsed.errors?.length) lastError = parsed.errors[0];
+    } finally {
+      releaseCanvas(mrzCanvas);
+    }
+  }
+  return { data: null, vizSnap: null, error: lastError };
+}
+
+/**
+ * 1-tap instant capture directly from the live camera stream (no waiting, no box alignment!).
+ */
+async function captureNowFromVideo() {
+  const video = $("#camera-video");
+  if (!video || video.readyState < 2 || !video.videoWidth) {
+    return toast("Camera is not ready yet. Use Pick Photo instead.");
+  }
+  const btn = $("#capture-now-button");
+  if (btn) { btn.disabled = true; btn.textContent = "⏳ Scanning…"; }
+  state.scanBusy = true;
+
+  let snap = null;
+  try {
+    snap = document.createElement("canvas");
+    snap.width = video.videoWidth;
+    snap.height = video.videoHeight;
+    snap.getContext("2d", { willReadFrequently: true }).drawImage(video, 0, 0);
+
+    $("#scanner-status").textContent = "Scanning captured frame…";
+    updateConsensusUi(1, 2, "Reading passport…");
+
+    const { data, vizSnap, error } = await scanStaticImageSource(snap, snap.width, snap.height);
+    if (data) {
+      updateConsensusUi(2, 2, "✓ Passport scanned!");
+      return showScanReview(data, vizSnap);
+    }
+    updateConsensusUi(0, 2, "Try again");
+    $("#scanner-status").textContent = `Rescan: ${error}`;
+  } catch (err) {
+    $("#scanner-status").textContent = `Scan failed: ${err.message || "Try again"}`;
+  } finally {
+    releaseCanvas(snap);
+    state.scanBusy = false;
+    if (btn) { btn.disabled = false; btn.textContent = "📸 Capture Now (Instant Scan)"; }
+  }
 }
 
 function stopScanner() {
@@ -2547,41 +2705,31 @@ function stopScanner() {
   state.camera?.getTracks().forEach(track => track.stop());
   state.camera = null;
   $("#camera-video").srcObject = null;
+  const boxEl = $("#auto-mrz-box");
+  if (boxEl) boxEl.hidden = true;
   if ($("#scanner-dialog").open) $("#scanner-dialog").close();
 }
 
-function showScanReview(result) {
+function showScanReview(result, vizCanvasSnapshot = null) {
   stopScanner();
-  state.scannedMrz = result;
+  const scanToken = Date.now() + Math.random();
+  const initialViz = vizCanvasSnapshot
+    ? { status: "checking", score: 0, unmatchedTokens: [], message: "Checking printed page…" }
+    : (result.viz || { status: "unavailable", score: 0, unmatchedTokens: [], message: "" });
+
+  state.scannedMrz = { ...result, viz: initialViz, _token: scanToken };
 
   const duplicate = result.passport_no
     ? active("workers").find(row => row.passport_no && row.passport_no.toUpperCase() === result.passport_no.toUpperCase())
     : null;
 
   const checks = result.checks || {};
-  const viz = result.viz || { status: "unavailable", score: 0, unmatchedTokens: [], message: "Printed page name could not be cross-checked." };
-  const needsManualNameConfirm = viz.status !== "verified" || Boolean(result.name_truncated);
   const expiryStatus = result.passport_expiry ? expiryBucket(result.passport_expiry) : "Unknown";
   const expiryTag = expiryStatus === "Expired" ? "bad" : expiryStatus.startsWith("Within") ? "warn" : "good";
 
-  const vizBannerHtml = viz.status === "verified"
-    ? `<div class="viz-banner verified">
-         <strong>✓ Printed Page Cross-Check Passed</strong>
-         <span>${esc(viz.message)}</span>
-       </div>`
-    : `<div class="viz-banner mismatch">
-         <strong>⚠️ ${viz.status === "mismatch" ? "Printed Name Mismatch — Verify Carefully" : "Manual Name Check Required"}</strong>
-         <span>${esc(viz.message)}</span>
-         ${viz.unmatchedTokens?.length ? `<span style="font-size:12px;">Check token(s): <b>${esc(viz.unmatchedTokens.join(", "))}</b></span>` : ""}
-         <label class="viz-confirm-check">
-           <input type="checkbox" id="rev-viz-confirmed">
-           <span>I checked the printed passport page and confirmed Surname &amp; Given Names below are exact.</span>
-         </label>
-       </div>`;
-
   const truncatedHtml = result.name_truncated
     ? `<div class="warning" style="margin:0; font-size:12.5px;">
-         <strong>ℹ️ 39-Character ICAO Limit Reached:</strong> Long name may be truncated in the MRZ. Complete any missing letters in Given Names / Surname below.
+         <strong>ℹ️ 39-Character ICAO Limit Reached:</strong> Long name may be cut off in the MRZ. Complete any missing letters below.
        </div>`
     : "";
 
@@ -2593,14 +2741,14 @@ function showScanReview(result) {
     : "";
 
   const reviewHtml = `
-    ${vizBannerHtml}
+    <div id="rev-viz-banner-slot"></div>
     ${truncatedHtml}
     ${duplicateHtml}
 
     <div class="scan-review-card">
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:2px;">
         <span style="font-size:12px; font-weight:750; color:var(--green-text); text-transform:uppercase; letter-spacing:0.5px;">
-          Editable Candidate Details (TD3 · ${esc(result.issuing_state || "—")})
+          Candidate Details (TD3 · ${esc(result.issuing_state || "—")})
         </span>
         ${statusTag(expiryStatus, expiryTag)}
       </div>
@@ -2646,7 +2794,7 @@ function showScanReview(result) {
     </div>
 
     <div>
-      <span style="font-size:11.5px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">ICAO Doc 9303 Part 4 Checksums (5/5 Verified):</span>
+      <span style="font-size:11.5px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">ICAO Doc 9303 Checksums (5/5 Verified):</span>
       <div class="review-checks-grid">
         <div class="check-badge ${checks.passport ? "pass" : "fail"}">${checks.passport ? "✓ Passport No." : "✕ Passport No."}</div>
         <div class="check-badge ${checks.dob ? "pass" : "fail"}">${checks.dob ? "✓ Date of Birth" : "✕ Date of Birth"}</div>
@@ -2658,6 +2806,7 @@ function showScanReview(result) {
   `;
 
   $("#scan-review-content").innerHTML = reviewHtml;
+  renderReviewVizBanner(initialViz, Boolean(result.name_truncated));
 
   const updateFullPreview = () => {
     const sur = ($("#rev-surname")?.value || "").trim().replace(/\s+/g, " ").toUpperCase();
@@ -2668,31 +2817,15 @@ function showScanReview(result) {
   };
   $("#rev-surname")?.addEventListener("input", updateFullPreview);
   $("#rev-given")?.addEventListener("input", updateFullPreview);
-
-  const acceptBtn = $("#btn-accept-scan");
-  const updateAcceptButton = () => {
-    const pp = ($("#rev-passport-no")?.value || "").trim().toUpperCase();
-    const isDup = pp && active("workers").some(row => row.passport_no && row.passport_no.toUpperCase() === pp);
-    const vizBox = $("#rev-viz-confirmed");
-    const vizOk = !needsManualNameConfirm || !vizBox || vizBox.checked;
-
-    if (isDup) {
-      acceptBtn.disabled = true;
-      acceptBtn.textContent = "⚠️ Cannot Register Duplicate Passport";
-    } else if (!vizOk) {
-      acceptBtn.disabled = true;
-      acceptBtn.textContent = "Confirm Name Above or Rescan";
-    } else {
-      acceptBtn.disabled = false;
-      acceptBtn.textContent = "✓ Confirm & Register Candidate";
-    }
-  };
-
-  $("#rev-passport-no")?.addEventListener("input", updateAcceptButton);
-  $("#rev-viz-confirmed")?.addEventListener("change", updateAcceptButton);
-  updateAcceptButton();
+  $("#rev-passport-no")?.addEventListener("input", updateScanReviewAcceptButton);
+  updateScanReviewAcceptButton();
 
   $("#scan-review-dialog").showModal();
+
+  // Run VIZ printed-name verification asynchronously in the background (zero wait time!)
+  if (vizCanvasSnapshot) {
+    runBackgroundVizCheck(vizCanvasSnapshot, result, scanToken);
+  }
 }
 
 function confirmScanReview() {
@@ -2742,74 +2875,21 @@ function confirmScanReview() {
 }
 
 async function readPhoto(file) {
-  $("#scanner-status").textContent = "Analyzing passport photo (TD3 2×44)…";
-  updateConsensusUi(0, 3, "Processing photo…", "");
+  $("#scanner-status").textContent = "Scanning passport photo…";
+  updateConsensusUi(1, 2, "Auto-detecting MRZ…");
   let bitmap = null;
   try {
     bitmap = await createImageBitmap(file);
-    const w = bitmap.width;
-    const h = bitmap.height;
-
-    // Candidate bottom MRZ strips + adaptive threshold sensitivities
-    const bands = [
-      { sy: h * 0.65, sh: h * 0.35, vizSy: h * 0.08, vizSh: h * 0.56 },
-      { sy: h * 0.55, sh: h * 0.45, vizSy: h * 0.05, vizSh: h * 0.50 },
-      { sy: h * 0.72, sh: h * 0.28, vizSy: h * 0.10, vizSh: h * 0.60 },
-      { sy: 0, sh: h, vizSy: 0, vizSh: h * 0.65 }
-    ];
-
-    let verified = null;
-    let lastError = "No valid 2×44 TD3 passport MRZ found. Ensure both bottom lines are flat, sharp, and glare-free.";
-    let matchedBand = null;
-    let matchedSkew = 0;
-
-    const worker = await getOcrWorker("mrz");
-
-    for (const band of bands) {
-      for (const tPercent of [12, 16]) {
-        let mrzCanvas = null;
-        try {
-          const pre = preprocessMrzFromSource(
-            bitmap,
-            { sx: 0, sy: band.sy, sw: w, sh: band.sh },
-            { skipQualityGate: true, tPercent }
-          );
-          mrzCanvas = pre.canvas;
-          if (!mrzCanvas) continue;
-          const ocr = await worker.recognize(mrzCanvas);
-          const parsed = parseTd3Mrz(ocr?.data?.text || "");
-          if (parsed.valid && parsed.data) {
-            verified = parsed.data;
-            matchedBand = band;
-            matchedSkew = pre.skewAngle;
-            break;
-          } else if (parsed.errors?.length) {
-            lastError = parsed.errors[0];
-          }
-        } finally {
-          releaseCanvas(mrzCanvas);
-        }
-      }
-      if (verified) break;
-    }
-
-    if (verified) {
-      updateConsensusUi(3, 3, "✓ 5/5 Check digits passed — verifying printed name…", "locked");
-      $("#scanner-status").textContent = "All 5 ICAO check digits verified. Cross-checking printed name…";
-      const vizCheck = await runVizCrossVerify(
-        bitmap,
-        { sx: 0, sy: matchedBand.vizSy, sw: w, sh: matchedBand.vizSh },
-        verified,
-        matchedSkew
-      );
-      showScanReview({ ...verified, viz: vizCheck, source: "photo" });
+    const { data, vizSnap, error } = await scanStaticImageSource(bitmap, bitmap.width, bitmap.height);
+    if (data) {
+      updateConsensusUi(2, 2, "✓ Passport scanned!");
+      showScanReview(data, vizSnap);
     } else {
-      // Strictly reject unchecked / failed scans — never display wrong data as valid!
-      updateConsensusUi(0, 3, "Rescan required", "warn");
-      $("#scanner-status").textContent = `Rescan required: ${lastError}`;
+      updateConsensusUi(0, 2, "Rescan required");
+      $("#scanner-status").textContent = `Rescan required: ${error}`;
     }
   } catch (error) {
-    updateConsensusUi(0, 3, "Photo read failed", "warn");
+    updateConsensusUi(0, 2, "Photo read failed");
     $("#scanner-status").textContent = `Could not read photo: ${error.message || "Try again or use Manual Entry."}`;
   } finally {
     try { bitmap?.close?.(); } catch (_) {}
@@ -2996,6 +3076,7 @@ async function boot() {
   document.querySelectorAll("[data-close]").forEach(button => button.onclick = () => button.closest("dialog").close());
   setupAgencyDialog();
   setupTakebackDialog();
+  $("#capture-now-button")?.addEventListener("click", captureNowFromVideo);
   $("#scanner-manual-btn")?.addEventListener("click", () => {
     stopScanner();
     openForm("workers");

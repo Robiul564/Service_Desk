@@ -215,38 +215,28 @@
   <dialog id="scanner-dialog" class="scanner-dialog">
     <div class="scanner-head">
       <div>
-        <h2 style="margin:0; font-size:18px;">🛂 Scan TD3 Passport</h2>
-        <span style="font-size:11.5px; color:#9ca3af;">ICAO 9303 · Auto-captures when 3 frames agree</span>
+        <h2 style="margin:0; font-size:18px;">🛂 Fast Passport Scanner</h2>
+        <span style="font-size:11.5px; color:#9ca3af;">Just point at the passport — auto-detects anywhere</span>
       </div>
       <button type="button" class="icon-button scanner-close-btn" data-close aria-label="Close">✕</button>
     </div>
     <div class="video-wrap">
       <video id="camera-video" playsinline muted></video>
-      <div class="passport-frame-overlay" id="passport-guide">
-        <div class="passport-viz-zone">
-          <span class="passport-zone-label">PASSPORT DATA PAGE (PHOTO + PRINTED NAME)</span>
-        </div>
-        <div class="passport-mrz-zone">
-          <div class="scan-line"></div>
-          <span class="mrz-guide-label">P&lt;BGD SURNAME&lt;&lt;GIVEN&lt;NAMES&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;</span>
-          <span class="mrz-guide-label">A00000000&lt;BGD0000000M0000000&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;</span>
-        </div>
-      </div>
+      <div class="viewfinder-corners" aria-hidden="true"></div>
+      <div class="auto-mrz-highlight" id="auto-mrz-box" hidden></div>
       <div class="consensus-pill" id="consensus-pill" aria-live="polite">
         <span class="consensus-dot" id="cdot-1"></span>
         <span class="consensus-dot" id="cdot-2"></span>
-        <span class="consensus-dot" id="cdot-3"></span>
-        <span id="consensus-label">Align passport in frame</span>
+        <span id="consensus-label">Point at passport anywhere in view</span>
       </div>
     </div>
-    <p id="scanner-status" role="status" aria-live="polite">Align full passport data page inside the guide and hold steady.</p>
+    <p id="scanner-status" role="status" aria-live="polite">Point camera at the passport — no need to align inside a box.</p>
     <div class="scanner-actions">
+      <button id="capture-now-button" type="button" class="primary btn-lg full">📸 Capture Now (Instant Scan)</button>
       <div class="button-row">
         <button id="torch-button" type="button" class="secondary" hidden>🔦 Torch</button>
-        <button id="photo-button" type="button" class="primary">📷 Take / Choose Photo</button>
-      </div>
-      <div class="button-row">
-        <button id="scanner-manual-btn" type="button" class="secondary">✏️ Manual Entry</button>
+        <button id="photo-button" type="button" class="secondary">🖼️ Pick Photo</button>
+        <button id="scanner-manual-btn" type="button" class="secondary">✏️ Manual</button>
         <button type="button" data-close class="secondary">Cancel</button>
       </div>
       <input id="photo-input" type="file" accept="image/*" capture="environment" hidden>
