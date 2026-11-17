@@ -214,7 +214,7 @@
   </dialog>
   <dialog id="scanner-dialog" class="scanner-dialog">
     <div class="scanner-head">
-      <b>Scan passport MRZ</b>
+      <h2>Scan Passport MRZ</h2>
       <button type="button" class="icon-button scanner-close-btn" data-close aria-label="Close">✕</button>
     </div>
     <div class="video-wrap">
@@ -229,9 +229,31 @@
       <div class="button-row">
         <button id="torch-button" class="secondary" hidden>🔦 Torch</button>
         <button id="photo-button" class="secondary">📷 Choose photo</button>
+        <button id="scanner-manual-btn" type="button" class="secondary">✏️ Manual Entry</button>
         <button type="button" data-close class="secondary">Cancel</button>
       </div>
       <input id="photo-input" type="file" accept="image/*" capture="environment" hidden>
+    </div>
+  </dialog>
+
+  <dialog id="scan-review-dialog" class="record-dialog" style="max-width: 520px;">
+    <div class="sheet-handle"></div>
+    <div class="dialog-heading">
+      <h2>Verify Scanned Passport</h2>
+      <button type="button" class="icon-button dialog-close-btn" data-close aria-label="Close">✕</button>
+    </div>
+    <div id="scan-review-content" class="scan-review-body">
+      <!-- Populated dynamically -->
+    </div>
+    <div class="dialog-footer" style="margin-top: 16px;">
+      <div class="button-row">
+        <button type="button" id="btn-accept-scan" class="primary btn-lg full">✓ Accept &amp; Continue</button>
+      </div>
+      <div class="button-row secondary-actions">
+        <button type="button" id="btn-rescan" class="secondary">🔄 Rescan</button>
+        <button type="button" id="btn-manual-from-review" class="secondary">✏️ Edit Manually</button>
+        <button type="button" data-close class="secondary">Cancel</button>
+      </div>
     </div>
   </dialog>
   <input id="restore-input" type="file" accept="application/json,.json" hidden>

@@ -27,7 +27,7 @@ test("parseMrz: parses ICAO TD3 sample with all required check digits valid", ()
   assert.equal(result.sex, "F");
   assert.equal(result.dob, "1974-08-12");
   assert.equal(result.passport_expiry, "2012-04-15");
-  assert.deepEqual(result.checks, { passport: true, dob: true, expiry: true });
+  assert.deepEqual(result.checks, { passport: true, dob: true, expiry: true, composite: true });
   assert.equal(result.score, 3);
 });
 
@@ -50,7 +50,7 @@ test("parseMrz: parses Bangladeshi BGD TD3 MRZ and maps nationality", () => {
   assert.equal(result.nationality, "Bangladeshi");
   assert.equal(result.passport_no, passport);
   assert.equal(result.sex, "M");
-  assert.deepEqual(result.checks, { passport: true, dob: true, expiry: true });
+  assert.deepEqual(result.checks, { passport: true, dob: true, expiry: true, composite: true });
 });
 
 test("parseMrz: correctly corrects OCR confusion characters (O/0, I/1, Z/2) in dates", () => {
@@ -84,6 +84,20 @@ test("parseMrz: discards surrounding OCR noise and selects best candidate", () =
   const result = parseMrz(noisyOcr);
   assert.ok(result);
   assert.equal(result.name, "ANNA MARIA ERIKSSON");
+  assert.equal(result.score, 3);
+});
+
+test("parseMrz: parses TD1 identity card 3-line format", () => {
+  const line1 = "I<UTOD231458907<<<<<<<<<<<<<<<";
+  const line2 = "7408122F1204159UTO<<<<<<<<<<<6";
+  const line3 = "ERIKSSON<<ANNA<MARIA<<<<<<<<<<";
+  const result = parseMrz(`${line1}\n${line2}\n${line3}`);
+  assert.ok(result);
+  assert.equal(result.format, "TD1");
+  assert.equal(result.name, "ANNA MARIA ERIKSSON");
+  assert.equal(result.passport_no, "D23145890");
+  assert.equal(result.dob, "1974-08-12");
+  assert.equal(result.passport_expiry, "2012-04-15");
   assert.equal(result.score, 3);
 });
 

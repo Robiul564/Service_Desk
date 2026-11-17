@@ -1273,6 +1273,171 @@ label input, label select, label textarea {
   }
 }
 
+/* ==========================================================================
+   UI / UX Enhancements: Search, MRZ Review, Masking, Touch Targets
+   ========================================================================== */
+
+/* Search Highlight */
+mark.search-highlight {
+  background: #fef08a;
+  color: #854d0e;
+  padding: 1px 3px;
+  border-radius: 4px;
+  font-weight: 700;
+}
+:root[data-theme="dark"] mark.search-highlight {
+  background: #854d0e;
+  color: #fef08a;
+}
+
+/* Clear Search Button */
+.search-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.search-input-wrap input {
+  padding-right: 40px;
+}
+.clear-search-btn {
+  position: absolute;
+  right: 8px;
+  min-height: 36px;
+  min-width: 36px;
+  height: 36px;
+  width: 36px;
+  padding: 0;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: manipulation;
+}
+.clear-search-btn:hover {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
+}
+
+/* Passport Masking & Toggle */
+.passport-badge-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.unmask-passport-btn {
+  min-height: 34px;
+  padding: 4px 8px;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.copy-passport-btn {
+  min-height: 34px;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 8px;
+}
+
+/* Scan Review Screen */
+.scan-review-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+.scan-review-card {
+  background: color-mix(in srgb, var(--green) 6%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--green) 30%, transparent);
+  border-radius: 14px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.review-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  padding-bottom: 6px;
+  font-size: 14px;
+}
+.review-row:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.review-label {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 13px;
+}
+.review-value {
+  font-weight: 700;
+  color: var(--ink);
+  text-align: right;
+}
+.review-checks-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-top: 4px;
+}
+.check-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.check-badge.pass {
+  background: var(--green-light);
+  color: var(--green-text);
+  border: 1px solid color-mix(in srgb, var(--green) 30%, transparent);
+}
+.check-badge.fail {
+  background: var(--red-light);
+  color: var(--red);
+  border: 1px solid color-mix(in srgb, var(--red) 30%, transparent);
+}
+
+/* Ensure 320px phone responsiveness */
+@media (max-width: 360px) {
+  body {
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+  .card {
+    padding: 12px;
+  }
+  .card-actions {
+    flex-direction: column;
+  }
+  .card-actions button {
+    width: 100%;
+  }
+  .button-row {
+    flex-direction: column;
+  }
+  .button-row button {
+    width: 100%;
+  }
+  .review-checks-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Accessibility: Respect user preference for reduced motion */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

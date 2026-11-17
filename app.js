@@ -920,16 +920,17 @@ function collectForm() {
 
 function validateRecord(table, row) {
   if (table === "workers") {
-    if (!row.name) return "Full name is required.";
+    if (!row.name || !row.name.trim()) return "Please enter the candidate's full name.";
     if (row.passport_no) {
-      const duplicate = active("workers").find(item => item.id !== row.id && item.passport_no?.toUpperCase() === row.passport_no);
-      if (duplicate) return `This passport is already assigned to ${duplicate.wid || duplicate.name}.`;
+      const cleanPassport = row.passport_no.toUpperCase().replace(/\s/g, "");
+      const duplicate = active("workers").find(item => item.id !== row.id && item.passport_no && item.passport_no.toUpperCase().replace(/\s/g, "") === cleanPassport);
+      if (duplicate) return `Passport ${row.passport_no} is already assigned to ${duplicate.name || duplicate.wid}. Duplicate passport numbers are blocked.`;
     }
   }
-  if (table === "agents" && (!row.id || active("agents").some(item => item.id === row.id && item.id !== state.form.row?.id))) return "Agent ID is required and must be unique.";
-  if (table === "companies" && (!row.name || active("companies").some(item => item.id !== row.id && item.name?.toLowerCase() === row.name.toLowerCase()))) return "Company name is required and must be unique.";
-  if (table === "payments" && (!row.worker_id || !row.stage)) return "Choose a worker and payment stage.";
-  if (["payments", "handovers", "expenses"].includes(table) && (!Number.isFinite(Number(row.amount)) || Number(row.amount) < 0)) return "Enter a valid non-negative amount.";
+  if (table === "agents" && (!row.id || active("agents").some(item => item.id === row.id && item.id !== state.form.row?.id))) return "Agent ID is required and must be unique (e.g. AGT-001).";
+  if (table === "companies" && (!row.name || active("companies").some(item => item.id !== row.id && item.name?.toLowerCase().trim() === row.name.toLowerCase().trim()))) return "Company name is required and must be unique.";
+  if (table === "payments" && (!row.worker_id || !row.stage)) return "Please choose a candidate and a payment stage.";
+  if (["payments", "handovers", "expenses"].includes(table) && (!Number.isFinite(Number(row.amount)) || Number(row.amount) < 0)) return "Please enter a valid non-negative amount.";
   if (table === "expenses" && !row.description) return "Expense description is required.";
   return null;
 }
@@ -937,14 +938,19 @@ function validateRecord(table, row) {
 async function submitForm(saveNext = false) {
   if (state.saving) return;
   state.saving = true;
-  $("#save-button").disabled = true;
+  const saveBtn = $("#save-button");
+  const origSaveText = saveBtn ? saveBtn.textContent : "Save";
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = "Saving…"; }
   const button = $("#save-next-button");
   if (button) button.disabled = true;
   try {
     const { table } = state.form;
     const row = collectForm();
     const problem = validateRecord(table, row);
-    if (problem) return toast(problem);
+    if (problem) {
+      toast(problem);
+      return;
+    }
     if (table === "payments") {
       const worker = rowById("workers", row.worker_id);
       const over = totalPaid(row.worker_id) - Number(state.form.row?.amount || 0) + Number(row.amount || 0) > Number(worker?.contract_fee || 0);
@@ -952,7 +958,7 @@ async function submitForm(saveNext = false) {
     }
     if (table === "workers") storageWrite(`passport-desk-last-assignment-${state.user?.id || "local"}`, JSON.stringify({ agent_id: row.agent_id || null, company: row.company || null }));
     await saveLocal(table, row);
-    toast("Saved on this phone. Syncing when online.");
+    toast("Saved successfully.");
     if (saveNext) {
       state.form = null;
       $("#record-dialog").close();
@@ -961,9 +967,11 @@ async function submitForm(saveNext = false) {
       $("#record-dialog").close();
     }
     syncNow();
+  } catch (err) {
+    toast(`Save error: ${err.message || "Could not save record."}`);
   } finally {
     state.saving = false;
-    $("#save-button").disabled = false;
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = origSaveText; }
     if (button) button.disabled = false;
   }
 }
@@ -971,15 +979,37 @@ async function submitForm(saveNext = false) {
 async function softDeleteCurrent() {
   const { table, row } = state.form;
   if (!row) return;
-  if (!row.deleted_at && !window.confirm("Move this record to trash? You can restore it later.")) return;
+  if (!row.deleted_at && !window.confirm(`Move "${row.name || row.wid || row.id}" to trash?\n\nYou can restore this record anytime from More → Trash.`)) return;
   const updated = { ...row, deleted_at: row.deleted_at ? null : new Date().toISOString(), updated_at: new Date().toISOString() };
   await saveLocal(table, updated);
   $("#record-dialog").close();
   toast(updated.deleted_at ? "Moved to trash. You can restore it later." : "Restored from trash.");
 }
 
+function maskPassport(passportNo) {
+  if (!passportNo) return "No passport";
+  const str = String(passportNo).trim();
+  if (str.length <= 4) return str;
+  return "•••• " + str.slice(-4);
+}
+
+function highlightMatch(text, query) {
+  if (!text || !query) return esc(text || "");
+  const cleanQ = query.trim().replace(/\s+/g, " ");
+  if (!cleanQ) return esc(text);
+  const escaped = esc(text);
+  try {
+    const regex = new RegExp(`(${cleanQ.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
+    return escaped.replace(regex, '<mark class="search-highlight">$1</mark>');
+  } catch (_) {
+    return escaped;
+  }
+}
+
 function filteredWorkers() {
-  const q = ($("#worker-search")?.value || "").trim().toLowerCase();
+  const rawQ = $("#worker-search")?.value || "";
+  const q = rawQ.trim().toLowerCase().replace(/\s+/g, " ");
+  const qCompact = rawQ.replace(/[\s-]/g, "").toLowerCase();
   const agency = $("#agency-filter")?.value || "";
   const subStatus = $("#substatus-filter")?.value || "";
   const agent = $("#agent-filter")?.value || "";
@@ -998,7 +1028,7 @@ function filteredWorkers() {
       row.agent_id, agentName(row.agent_id),
       row.submission_agency, row.submission_status,
       row.passport_withdrawn_by, row.passport_withdrawn_reason, row.notes
-    ].join(" ").toLowerCase();
+    ].filter(Boolean).join(" ").toLowerCase();
 
     const duplicate = !!row.passport_no && counts.get(row.passport_no.toUpperCase()) > 1;
 
@@ -1006,7 +1036,13 @@ function filteredWorkers() {
     const matchSubStatus = !subStatus || (row.submission_status || "In Office (Not Submitted)") === subStatus;
     const matchMedical = !medical || row.medical_status === medical;
 
-    return (!q || words.includes(q)) &&
+    const matchQuery = !q ||
+      (row.name && row.name.toLowerCase().replace(/\s+/g, " ").includes(q)) ||
+      (row.passport_no && row.passport_no.replace(/[\s-]/g, "").toLowerCase().includes(qCompact)) ||
+      (row.wid && row.wid.toLowerCase().includes(q)) ||
+      words.includes(q);
+
+    return matchQuery &&
       (!agent || row.agent_id === agent) &&
       (!company || row.company === company) &&
       matchAgency &&
@@ -1377,6 +1413,7 @@ function renderDashboard() {
 }
 
 function workerCard(row) {
+  const currentQuery = ($("#worker-search")?.value || "").trim();
   const duplicate = row.passport_no && active("workers").filter(item => item.passport_no?.toUpperCase() === row.passport_no.toUpperCase()).length > 1;
   const expiry = expiryBucket(row.passport_expiry);
   const tagClass = expiry === "Expired" ? "bad" : expiry.startsWith("Within") ? "warn" : "good";
@@ -1405,12 +1442,17 @@ function workerCard(row) {
       ? `<span class="tag warn">${esc(row.submission_status)}</span>`
       : "");
 
+  const masked = maskPassport(row.passport_no);
+  const displayedName = highlightMatch(row.name || "Unnamed worker", currentQuery);
+  const displayedPassport = highlightMatch(masked, currentQuery);
+
   return `<article class="card record-card" data-open="workers" data-id="${esc(row.id)}">
     <div class="record-title">
       <div>
-        <strong>${esc(row.name || "Unnamed worker")}</strong>
+        <strong>${displayedName}</strong>
         <div class="passport-badge-wrap">
-          <span class="passport-pill">🛂 ${esc(row.passport_no || "No passport")}</span>
+          <span class="passport-pill">🛂 <span class="pp-text" data-passport-id="${esc(row.id)}" data-full="${esc(row.passport_no || '')}" data-masked="${esc(masked)}">${displayedPassport}</span></span>
+          ${row.passport_no ? `<button type="button" class="unmask-passport-btn" data-toggle-mask="${esc(row.id)}" title="Show/Hide full passport" aria-label="Toggle passport visibility">👁️</button>` : ""}
           ${row.passport_no ? `<button type="button" class="copy-passport-btn" data-copy="${esc(row.passport_no)}" title="Copy passport">📋 Copy</button>` : ""}
           ${duplicate ? statusTag("Duplicate", "bad") : ""}
           ${row.review ? statusTag("Review date", "warn") : ""}
@@ -1515,11 +1557,35 @@ function renderWorkers() {
 
   const filterCount = [previous.query, previous.agency, previous.subStatus, previous.agent, previous.company, previous.pipeline, previous.medical, previous.filter].filter(Boolean).length;
 
+  let emptyStateHtml;
+  if (previous.query) {
+    emptyStateHtml = `<div class="empty">
+      <div style="font-size:26px; margin-bottom:6px;">🔍</div>
+      <b>No candidates match "${esc(previous.query)}"</b>
+      <p class="meta" style="margin-top:4px;">Check for spelling errors or search by passport number.</p>
+      <button type="button" id="btn-reset-search-empty" class="secondary" style="margin-top:10px;">✕ Clear Search</button>
+    </div>`;
+  } else if (filterCount > 0) {
+    emptyStateHtml = `<div class="empty">
+      <div style="font-size:26px; margin-bottom:6px;">📋</div>
+      <b>No candidates match the selected filters.</b>
+      <p class="meta" style="margin-top:4px;">Try changing or clearing your filters.</p>
+      <button type="button" id="clear-filters-btn-empty" class="secondary" style="margin-top:10px;">✕ Reset Filters</button>
+    </div>`;
+  } else {
+    emptyStateHtml = `<div class="empty">
+      <div style="font-size:30px; margin-bottom:6px;">🛂</div>
+      <b>No workers registered yet.</b>
+      <p class="meta" style="margin-top:4px;">Scan a passport or add a candidate to get started.</p>
+    </div>`;
+  }
+
   $("#page-workers").innerHTML = `<h2>Workers &amp; Passports</h2>
     <div class="search-bar">
       <div class="search-input-wrap">
         <svg class="search-icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-        <input id="worker-search" type="search" placeholder="Search name, passport, agency, phone, ID…" value="${esc(previous.query)}">
+        <input id="worker-search" type="search" placeholder="Search candidate name or passport number…" value="${esc(previous.query)}" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Search candidates">
+        ${previous.query ? '<button type="button" id="clear-search-btn" class="clear-search-btn" title="Clear search" aria-label="Clear search">✕</button>' : ''}
       </div>
       <div class="filter-chips">
         ${chips.map(chip => `<button type="button" class="filter-chip ${chip.id === activeChip ? "active" : ""}" data-filter="${esc(chip.id)}">${esc(chip.label)}</button>`).join("")}
@@ -1585,7 +1651,7 @@ function renderWorkers() {
     </div>
 
     <div class="list-count">${list.length} candidate(s) · page ${state.pageIndex + 1} of ${Math.max(1, Math.ceil(list.length / PAGE_SIZE))}</div>
-    ${visible.length ? visible.map(workerCard).join("") : '<div class="empty">No workers match these filters. Change filters or add a worker.</div>'}
+    ${visible.length ? visible.map(workerCard).join("") : emptyStateHtml}
     <div class="button-row"><button id="prev-page" ${state.pageIndex ? "" : "disabled"}>Previous</button><button id="next-page" ${(state.pageIndex + 1) * PAGE_SIZE < list.length ? "" : "disabled"}>Next</button></div>`;
 
   document.querySelectorAll(".filter-chip").forEach(chip => {
@@ -1630,7 +1696,43 @@ function renderWorkers() {
     renderWorkers();
   });
 
-  $("#worker-search").addEventListener("input", () => { state.pageIndex = 0; renderWorkers(); });
+  const searchInput = $("#worker-search");
+  if (searchInput) {
+    let debounceTimer;
+    searchInput.addEventListener("input", () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        state.pageIndex = 0;
+        const curStart = searchInput.selectionStart;
+        const curEnd = searchInput.selectionEnd;
+        renderWorkers();
+        const fresh = $("#worker-search");
+        if (fresh) {
+          fresh.focus();
+          try { if (curStart !== null) fresh.setSelectionRange(curStart, curEnd); } catch (_) {}
+        }
+      }, 160);
+    });
+  }
+
+  $("#clear-search-btn")?.addEventListener("click", () => {
+    const input = $("#worker-search");
+    if (input) input.value = "";
+    state.pageIndex = 0;
+    renderWorkers();
+    $("#worker-search")?.focus();
+  });
+
+  $("#btn-reset-search-empty")?.addEventListener("click", () => {
+    const input = $("#worker-search");
+    if (input) input.value = "";
+    state.pageIndex = 0;
+    renderWorkers();
+  });
+
+  $("#clear-filters-btn-empty")?.addEventListener("click", () => {
+    $("#clear-filters-btn")?.click();
+  });
   $("#agency-filter").addEventListener("change", (e) => {
     if (e.target.value === "__add_new__") {
       e.target.value = previous.agency || "";
@@ -2214,7 +2316,7 @@ async function scannerTick() {
         state.bestMrz = result;
         $("#use-best-button").disabled = false;
         $("#scanner-status").textContent = result.score === 3 ? "Passport read. All three check digits passed." : `Read found · ${result.score}/3 check digits passed. Verify the highlighted fields.`;
-        if (result.score === 3) return useMrzResult(result);
+        if (result.score === 3) return showScanReview(result);
       } else if (!result) $("#scanner-status").textContent = "Move closer, reduce glare, and keep both lines inside the guide.";
     } catch (error) {
       $("#scanner-status").textContent = error.message || "OCR failed. Choose a clear photo or enter details manually.";
@@ -2232,15 +2334,95 @@ function stopScanner() {
   if ($("#scanner-dialog").open) $("#scanner-dialog").close();
 }
 
-function useMrzResult(result) {
+function showScanReview(result) {
   stopScanner();
+  state.scannedMrz = result;
+
+  const duplicate = result.passport_no
+    ? active("workers").find(row => row.passport_no && row.passport_no.toUpperCase() === result.passport_no.toUpperCase())
+    : null;
+
+  const checks = result.checks || {};
+  const dobFormatted = result.dob || "Unrecognized";
+  const expiryFormatted = result.passport_expiry || "Unrecognized";
+  const expiryStatus = result.passport_expiry ? expiryBucket(result.passport_expiry) : "Unknown";
+  const expiryTag = expiryStatus === "Expired" ? "bad" : expiryStatus.startsWith("Within") ? "warn" : "good";
+
+  let reviewHtml = `
+    <div class="scan-review-card">
+      <div class="review-row">
+        <span class="review-label">Document Standard</span>
+        <span class="review-value">${esc(result.format === "TD1" ? "National ID Card (TD1)" : "Standard Passport (TD3)")}</span>
+      </div>
+      <div class="review-row">
+        <span class="review-label">Candidate Name</span>
+        <span class="review-value" style="font-size:15px; color:var(--green); font-weight:700;">${esc(result.name || "—")}</span>
+      </div>
+      <div class="review-row">
+        <span class="review-label">Passport Number</span>
+        <span class="review-value" style="font-family:ui-monospace, monospace; font-size:15px;">${esc(result.passport_no || "—")}</span>
+      </div>
+      <div class="review-row">
+        <span class="review-label">Date of Birth</span>
+        <span class="review-value">${esc(dobFormatted)}</span>
+      </div>
+      <div class="review-row">
+        <span class="review-label">Passport Expiry</span>
+        <span class="review-value">${esc(expiryFormatted)} ${statusTag(expiryStatus, expiryTag)}</span>
+      </div>
+      <div class="review-row">
+        <span class="review-label">Nationality</span>
+        <span class="review-value">${esc(result.nationality || "—")}</span>
+      </div>
+      <div class="review-row">
+        <span class="review-label">Sex</span>
+        <span class="review-value">${esc(result.sex || "—")}</span>
+      </div>
+    </div>
+
+    <div style="margin-top: 12px;">
+      <span style="font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">ICAO 9303 Security Checksums:</span>
+      <div class="review-checks-grid">
+        <div class="check-badge ${checks.passport ? 'pass' : 'fail'}">${checks.passport ? '✓ Passport Checksum' : '⚠️ Passport Checksum'}</div>
+        <div class="check-badge ${checks.dob ? 'pass' : 'fail'}">${checks.dob ? '✓ DOB Checksum' : '⚠️ DOB Checksum'}</div>
+        <div class="check-badge ${checks.expiry ? 'pass' : 'fail'}">${checks.expiry ? '✓ Expiry Checksum' : '⚠️ Expiry Checksum'}</div>
+        <div class="check-badge ${checks.composite !== false ? 'pass' : 'fail'}">${checks.composite !== false ? '✓ Composite Checksum' : '⚠️ Composite Checksum'}</div>
+      </div>
+    </div>
+  `;
+
+  if (duplicate) {
+    reviewHtml += `
+      <div class="warning" style="margin-top:12px; border-radius:10px; background:var(--red-light); color:var(--red); border:1px solid color-mix(in srgb, var(--red) 30%, transparent); font-size:13px; line-height:1.4;">
+        <strong>⚠️ DUPLICATE PASSPORT DETECTED</strong><br>
+        Passport <b>${esc(result.passport_no)}</b> is already registered to candidate <b>${esc(duplicate.name)}</b> (${esc(duplicate.wid || duplicate.id)}). Duplicate passport entries are blocked.
+      </div>
+    `;
+  }
+
+  $("#scan-review-content").innerHTML = reviewHtml;
+
+  const acceptBtn = $("#btn-accept-scan");
+  if (duplicate) {
+    acceptBtn.disabled = true;
+    acceptBtn.textContent = "⚠️ Cannot Save Duplicate";
+  } else {
+    acceptBtn.disabled = false;
+    acceptBtn.textContent = "✓ Confirm & Fill Record";
+  }
+
+  $("#scan-review-dialog").showModal();
+}
+
+function proceedWithScannedResult(result) {
+  $("#scan-review-dialog")?.close();
   const warnings = [];
-  for (const [key, label] of [["passport", "passport number"], ["dob", "date of birth"], ["expiry", "passport expiry"]]) if (!result.checks[key]) warnings.push(`Check digit failed for ${label}. Verify it against the passport.`);
+  for (const [key, label] of [["passport", "passport number"], ["dob", "date of birth"], ["expiry", "passport expiry"]]) if (!result.checks?.[key]) warnings.push(`Check digit failed for ${label}. Verify it against the passport.`);
   if (!result.dob) warnings.push("Date of birth could not be interpreted. Verify it against the passport.");
   if (!result.passport_expiry) warnings.push("Passport expiry could not be interpreted. Verify it against the passport.");
   const duplicate = active("workers").find(row => row.passport_no?.toUpperCase() === result.passport_no?.toUpperCase());
   if (duplicate) warnings.push(`Duplicate passport already saved for ${duplicate.wid || duplicate.name}.`);
-  const { checks, score, ...fields } = result;
+  const { checks, score, format, ...fields } = result;
   openForm("workers", null, { warnings, defaults: fields });
   for (const [key, value] of Object.entries(fields)) {
     const field = $(`#field-${key}`);
@@ -2252,18 +2434,21 @@ function useMrzResult(result) {
 
 async function readPhoto(file) {
   $("#scanner-status").textContent = "Reading passport photo…";
+  let bitmap = null;
   try {
-    const bitmap = await createImageBitmap(file);
+    bitmap = await createImageBitmap(file);
     let best = null;
     for (const [start, height] of [[0.60, 0.4], [0.48, 0.52], [0, 1]]) {
       const result = await recognize(bitmap, 0, bitmap.height * start, bitmap.width, bitmap.height * height);
       if (result && (!best || result.score > best.score)) best = result;
       if (best?.score === 3) break;
     }
-    if (best) useMrzResult(best);
+    if (best) showScanReview(best);
     else $("#scanner-status").textContent = "MRZ not found. Use a sharper photo with both bottom lines visible.";
   } catch (error) {
     $("#scanner-status").textContent = `OCR could not read this photo: ${error.message}. Enter passport details manually.`;
+  } finally {
+    try { bitmap?.close?.(); } catch (_) {}
   }
 }
 
@@ -2447,7 +2632,22 @@ async function boot() {
   document.querySelectorAll("[data-close]").forEach(button => button.onclick = () => button.closest("dialog").close());
   setupAgencyDialog();
   setupTakebackDialog();
-  $("#use-best-button").onclick = () => state.bestMrz && useMrzResult(state.bestMrz);
+  $("#use-best-button").onclick = () => state.bestMrz && showScanReview(state.bestMrz);
+  $("#scanner-manual-btn")?.addEventListener("click", () => {
+    stopScanner();
+    openForm("workers");
+  });
+  $("#btn-accept-scan")?.addEventListener("click", () => {
+    if (state.scannedMrz) proceedWithScannedResult(state.scannedMrz);
+  });
+  $("#btn-rescan")?.addEventListener("click", () => {
+    $("#scan-review-dialog")?.close();
+    startScanner();
+  });
+  $("#btn-manual-from-review")?.addEventListener("click", () => {
+    $("#scan-review-dialog")?.close();
+    openForm("workers");
+  });
   $("#photo-button").onclick = () => $("#photo-input").click();
   $("#photo-input").onchange = event => { const file = event.target.files[0]; event.target.value = ""; if (file) readPhoto(file); };
   $("#restore-input").onchange = async event => {
@@ -2462,6 +2662,19 @@ async function boot() {
     state.role = savedRole;
   }
   document.addEventListener("click", async event => {
+    const toggleMaskBtn = event.target.closest("[data-toggle-mask]");
+    if (toggleMaskBtn) {
+      event.stopPropagation();
+      const id = toggleMaskBtn.dataset.toggleMask;
+      const textEl = document.querySelector(`.pp-text[data-passport-id="${id}"]`);
+      if (textEl) {
+        const isMasked = textEl.textContent.includes("•");
+        textEl.textContent = isMasked ? textEl.dataset.full : textEl.dataset.masked;
+        toggleMaskBtn.textContent = isMasked ? "🙈" : "👁️";
+        toggleMaskBtn.title = isMasked ? "Hide passport number" : "Show full passport number";
+      }
+      return;
+    }
     const copyBtn = event.target.closest("[data-copy]");
     if (copyBtn) {
       event.stopPropagation();
