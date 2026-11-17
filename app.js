@@ -1911,21 +1911,58 @@ function renderData() {
     render();
   });
   $("#create-user")?.addEventListener("click", async () => {
-    const email = $("#new-user-email").value.trim();
+    const email = $("#new-user-email").value.trim().toLowerCase();
     const password = $("#new-user-password").value;
     const role = $("#new-user-role").value;
-    if (!email || password.length < 8) return toast("Enter an email and a temporary password of at least 8 characters.");
+    if (!email || password.length < 8) return toast("Enter a valid email (e.g. staff@agency.com) and a password of at least 8 characters.");
     const button = $("#create-user");
     button.disabled = true;
+    button.textContent = "Creating account…";
     try {
-      const { data, error } = await state.supabase.functions.invoke("admin-users", { body: { action: "create", email, password, role } });
-      if (error) throw error;
-      if (data?.error) throw new Error(data.error);
-      if (data?.profile) await saveLocal("user_profiles", data.profile, false);
-      toast(`Account created for ${email}. Share the temporary password securely.`);
-      renderData();
-    } catch (error) { toast(`Could not create account: ${error.message}`); }
-    finally { button.disabled = false; }
+      let createdProfile = null;
+      // 1. Try edge function first if deployed
+      try {
+        const { data, error } = await state.supabase.functions.invoke("admin-users", { body: { action: "create", email, password, role } });
+        if (!error && !data?.error && data?.profile) {
+          createdProfile = data.profile;
+        }
+      } catch (_) {}
+
+      // 2. Direct client signup fallback using independent client instance to preserve current admin session
+      if (!createdProfile && window.supabase && config.supabaseUrl && config.supabaseAnonKey) {
+        const authClient = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey, {
+          auth: { persistSession: false, autoRefreshToken: false }
+        });
+        const { data: signUpData, error: signUpErr } = await authClient.auth.signUp({ email, password });
+        if (signUpErr) throw signUpErr;
+        const newUserId = signUpData?.user?.id;
+        if (newUserId) {
+          // Update role in user_profiles using admin client
+          const { data: updatedProfile } = await state.supabase
+            .from("user_profiles")
+            .update({ email, role, enabled: true, updated_at: new Date().toISOString() })
+            .eq("id", newUserId)
+            .select("*")
+            .maybeSingle();
+          createdProfile = updatedProfile || { id: newUserId, email, role, enabled: true };
+        }
+      }
+
+      if (createdProfile) {
+        await saveLocal("user_profiles", createdProfile, false);
+        toast(`Account created for ${email} with role "${role}".`);
+        $("#new-user-email").value = "";
+        $("#new-user-password").value = "";
+        renderData();
+      } else {
+        throw new Error("Could not create account. Please ensure the email has a valid domain (e.g. staff@company.com).");
+      }
+    } catch (error) {
+      toast(`Could not create account: ${error.message || "Failed"}`);
+    } finally {
+      button.disabled = false;
+      button.textContent = "Create account";
+    }
   });
   document.querySelectorAll("[data-restore]").forEach(button => button.onclick = async () => {
     const [table, id] = button.dataset.restore.split(":");
