@@ -722,6 +722,216 @@ export function parseMrz(text, options = {}) {
 }
 
 /**
+ * Pad or trim lines that are off by 1-2 chars (e.g. when OCR drops trailing '<').
+ */
+export function fit(line, n) {
+  if (!line || typeof line !== "string") return null;
+  if (Math.abs(line.length - n) > 2) return null;
+  return (line + "<".repeat(n)).slice(0, n);
+}
+
+/**
+ * Filter and clean raw OCR lines, retaining only alphanumeric + '<' with length >= 26.
+ */
+export function cleanLines(text) {
+  if (!text || typeof text !== "string") return [];
+  const lines = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const s = cleanOcrLine(raw);
+    if (s.length >= 26) {
+      lines.push(s);
+    }
+  }
+  return lines;
+}
+
+/**
+ * Direct TD3 parser matching the python scanner implementation.
+ */
+export function parseTd3(l1, l2, options = {}) {
+  const fitted1 = fit(l1, 44);
+  const fitted2 = fit(l2, 44);
+  if (!fitted1 || !fitted2 || fitted1[0] !== "P") return null;
+
+  const res = validateTd3Pair(fitted1, fitted2, options);
+  if (res.valid && res.data) {
+    return {
+      format: "TD3",
+      document_type: res.data.document_type,
+      issuing_country: res.data.issuing_state,
+      issuing_state: res.data.issuing_state,
+      surname: res.data.surname,
+      given_names: res.data.given_names,
+      name: res.data.name,
+      document_number: res.data.passport_no,
+      passport_no: res.data.passport_no,
+      nationality: res.data.nationality,
+      nationality_code: res.data.nationality_code,
+      birth_date: res.data.dob,
+      dob: res.data.dob,
+      sex: res.data.sex || "X",
+      expiry_date: res.data.passport_expiry,
+      passport_expiry: res.data.passport_expiry,
+      optional_data: res.data.personal_number || "",
+      personal_number: res.data.personal_number,
+      checks: res.checks,
+      all_checks_passed: true,
+      rawLines: [fitted1, fitted2]
+    };
+  }
+  return null;
+}
+
+/**
+ * TD2 parser (2 lines x 36 characters) matching the python scanner implementation.
+ */
+export function parseTd2(l1, l2, options = {}) {
+  const fitted1 = fit(l1, 36);
+  const fitted2 = fit(l2, 36);
+  if (!fitted1 || !fitted2 || !"ACI".includes(fitted1[0])) return null;
+
+  const doc = fitted2.slice(0, 9);
+  const doc_cd = toNumericField(fitted2[9]);
+  const dob = toNumericField(fitted2.slice(13, 19));
+  const dob_cd = toNumericField(fitted2[19]);
+  const exp = toNumericField(fitted2.slice(21, 27));
+  const exp_cd = toNumericField(fitted2[27]);
+  const opt = fitted2.slice(28, 35);
+  const comp_cd = toNumericField(fitted2[35]);
+
+  const composite = doc + doc_cd + dob + dob_cd + exp + exp_cd + opt;
+  const checks = {
+    document_number: checkDigit(doc) === Number(doc_cd),
+    birth_date: checkDigit(dob) === Number(dob_cd) && /^\d{6}$/.test(dob),
+    expiry_date: checkDigit(exp) === Number(exp_cd) && /^\d{6}$/.test(exp),
+    composite: checkDigit(composite) === Number(comp_cd)
+  };
+
+  const allPassed = Object.values(checks).every(Boolean);
+  if (!allPassed) return null;
+
+  const parsedName = parseTd3Name(fitted1 + "<".repeat(8));
+  const surname = parsedName.valid ? parsedName.surname : fitted1.slice(5).split("<<")[0].replace(/</g, " ").trim();
+  const given = parsedName.valid ? parsedName.given_names : (fitted1.slice(5).split("<<")[1] || "").replace(/</g, " ").trim();
+  const fullName = given ? `${given} ${surname}`.trim() : surname;
+
+  const natCode = fitted2.slice(10, 13).replace(/0/g, "O").replace(/1/g, "I");
+  const countryCode = fitted1.slice(2, 5).replace(/0/g, "O").replace(/1/g, "I");
+
+  return {
+    format: "TD2",
+    document_type: fitted1.slice(0, 2).replace(/</g, ""),
+    issuing_country: countryCode,
+    issuing_state: countryCode,
+    surname,
+    given_names: given,
+    name: fullName,
+    document_number: doc.replace(/</g, ""),
+    passport_no: doc.replace(/</g, ""),
+    nationality: NATIONALITY_LABELS[natCode] || natCode,
+    nationality_code: natCode,
+    birth_date: parseMrzDate(dob, { isDob: true, referenceDate: options.referenceDate }),
+    dob: parseMrzDate(dob, { isDob: true, referenceDate: options.referenceDate }),
+    sex: "MF".includes(fitted2[20]) ? fitted2[20] : "X",
+    expiry_date: parseMrzDate(exp, { isDob: false, referenceDate: options.referenceDate }),
+    passport_expiry: parseMrzDate(exp, { isDob: false, referenceDate: options.referenceDate }),
+    optional_data: opt.replace(/<+$/, ""),
+    checks,
+    all_checks_passed: true,
+    rawLines: [fitted1, fitted2]
+  };
+}
+
+/**
+ * TD1 parser (3 lines x 30 characters) matching the python scanner implementation.
+ */
+export function parseTd1(l1, l2, l3, options = {}) {
+  const fitted1 = fit(l1, 30);
+  const fitted2 = fit(l2, 30);
+  const fitted3 = fit(l3, 30);
+  if (!fitted1 || !fitted2 || !fitted3) return null;
+
+  const doc = fitted1.slice(5, 14);
+  const doc_cd = toNumericField(fitted1[14]);
+  const dob = toNumericField(fitted2.slice(0, 6));
+  const dob_cd = toNumericField(fitted2[6]);
+  const exp = toNumericField(fitted2.slice(8, 14));
+  const exp_cd = toNumericField(fitted2[14]);
+  const comp_cd = toNumericField(fitted2[29]);
+
+  const composite = fitted1.slice(5, 30) + dob + dob_cd + exp + exp_cd + fitted2.slice(18, 29);
+  const checks = {
+    document_number: checkDigit(doc) === Number(doc_cd),
+    birth_date: checkDigit(dob) === Number(dob_cd) && /^\d{6}$/.test(dob),
+    expiry_date: checkDigit(exp) === Number(exp_cd) && /^\d{6}$/.test(exp),
+    composite: checkDigit(composite) === Number(comp_cd)
+  };
+
+  const allPassed = Object.values(checks).every(Boolean);
+  if (!allPassed) return null;
+
+  const parts = fitted3.replace(/<+$/, "").split("<<");
+  const surname = (parts[0] || "").replace(/</g, " ").trim();
+  const given = (parts.slice(1).join(" ") || "").replace(/</g, " ").trim();
+  const fullName = given ? `${given} ${surname}`.trim() : surname;
+
+  const natCode = fitted2.slice(15, 18).replace(/0/g, "O").replace(/1/g, "I");
+  const countryCode = fitted1.slice(2, 5).replace(/0/g, "O").replace(/1/g, "I");
+
+  return {
+    format: "TD1",
+    document_type: fitted1.slice(0, 2).replace(/</g, ""),
+    issuing_country: countryCode,
+    issuing_state: countryCode,
+    surname,
+    given_names: given,
+    name: fullName,
+    document_number: doc.replace(/</g, ""),
+    passport_no: doc.replace(/</g, ""),
+    nationality: NATIONALITY_LABELS[natCode] || natCode,
+    nationality_code: natCode,
+    birth_date: parseMrzDate(dob, { isDob: true, referenceDate: options.referenceDate }),
+    dob: parseMrzDate(dob, { isDob: true, referenceDate: options.referenceDate }),
+    sex: "MF".includes(fitted2[7]) ? fitted2[7] : "X",
+    expiry_date: parseMrzDate(exp, { isDob: false, referenceDate: options.referenceDate }),
+    passport_expiry: parseMrzDate(exp, { isDob: false, referenceDate: options.referenceDate }),
+    optional_data: "",
+    checks,
+    all_checks_passed: true,
+    rawLines: [fitted1, fitted2, fitted3]
+  };
+}
+
+/**
+ * Universal multi-format MRZ parser matching python try_parse(lines).
+ * Tries TD3 (passports 2x44), TD1 (ID 3x30), and TD2 (ID 2x36).
+ */
+export function tryParseMrz(textOrLines, options = {}) {
+  const lines = Array.isArray(textOrLines) ? textOrLines : cleanLines(textOrLines);
+  if (!lines || lines.length < 2) return null;
+
+  const specs = [
+    { nLines: 2, size: 44, fn: parseTd3 },
+    { nLines: 3, size: 30, fn: parseTd1 },
+    { nLines: 2, size: 36, fn: parseTd2 }
+  ];
+
+  for (const { nLines, size, fn } of specs) {
+    if (lines.length < nLines) continue;
+    for (let i = 0; i <= lines.length - nLines; i += 1) {
+      const slice = lines.slice(i, i + nLines);
+      const fitted = slice.map(l => fit(l, size));
+      if (fitted.some(x => x === null)) continue;
+      const res = fn(...fitted, options);
+      if (res && res.all_checks_passed) {
+        return res;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Multi-frame per-character majority voting and N-consecutive-frame consensus tracker.
  *
  * Accepts a live scan ONLY when:
@@ -772,7 +982,13 @@ export class MrzFrameConsensus {
    * @returns {{ locked: boolean, validFrame: boolean, consecutive: number, required: number, data: object|null, errors: string[] }}
    */
   push(ocrText, options = {}) {
-    const parsed = parseTd3Mrz(ocrText, options);
+    let parsed = parseTd3Mrz(ocrText, options);
+    if (!parsed.valid) {
+      const alt = tryParseMrz(ocrText, options);
+      if (alt && alt.all_checks_passed && alt.rawLines?.length === 2 && alt.rawLines[0].length === 44 && alt.rawLines[1].length === 44) {
+        parsed = { valid: true, data: alt, rawLines: alt.rawLines, errors: [] };
+      }
+    }
     if (!parsed.valid) {
       this.missedStreak += 1;
       // Allow 1 momentary blur frame without wiping out progress; reset after 2 consecutive misses

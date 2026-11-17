@@ -1,4 +1,4 @@
-import { parseTd3Mrz, MrzFrameConsensus, crossVerifyNameWithViz } from "./mrz.mjs";
+import { parseTd3Mrz, tryParseMrz, MrzFrameConsensus, crossVerifyNameWithViz } from "./mrz.mjs";
 import { autoLocatePassportRois, preprocessMrzFromSource, preprocessVizFromSource } from "./mrz-vision.mjs";
 
 const TABLES = ["workers", "agents", "companies", "payments", "handovers", "expenses", "user_profiles", "history"];
@@ -2687,6 +2687,11 @@ async function scanStaticImageSource(source, w, h) {
       if (parsed.valid && parsed.data) {
         const vizSnap = captureVizCanvasSnapshot(source, cand.vizRoi, pre.skewAngle);
         return { data: parsed.data, vizSnap, error: null };
+      }
+      const alt = tryParseMrz(ocr?.data?.text || "");
+      if (alt && alt.all_checks_passed) {
+        const vizSnap = captureVizCanvasSnapshot(source, cand.vizRoi, pre.skewAngle);
+        return { data: alt, vizSnap, error: null };
       }
       if (parsed.errors?.length) lastError = parsed.errors[0];
     } finally {

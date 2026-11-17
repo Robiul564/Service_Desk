@@ -12,3 +12,5 @@ Thumbs.db
 passport-desk/
 
 .vercel
+__pycache__/
+*.pyc

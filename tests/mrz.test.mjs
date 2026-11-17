@@ -9,7 +9,13 @@ import {
   MrzFrameConsensus,
   crossVerifyNameWithViz,
   isValidIcaoCountryCode,
-  parseMrzDate
+  parseMrzDate,
+  fit,
+  cleanLines,
+  parseTd1,
+  parseTd2,
+  parseTd3,
+  tryParseMrz
 } from "../mrz.mjs";
 import {
   analyzeFrameQuality,
@@ -524,4 +530,54 @@ test("CV auto-locator: finds 2-line MRZ block anywhere in frame (top, middle, or
     assert.ok(detBot >= r2y1 - 4, `[${label}] detected bottom ${detBot} should cover row2 bottom ${r2y1}`);
     assert.ok(box.confidence > 0.05, `[${label}] confidence should be positive`);
   }
+});
+
+test("Universal multi-format MRZ engine (Python try_parse equivalent): fit, sliding window & multi-format support", () => {
+  // 1. fit: pads or trims ±1-2 characters
+  assert.equal(fit("P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<", 44), "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<");
+  assert.equal(fit("P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<", 44), "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<");
+  assert.equal(fit("P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<<", 44), "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<");
+  assert.equal(fit("SHORT", 44), null);
+
+  // 2. TD3 with dropped trailing '<' is recovered via tryParseMrz
+  const rawWithShortLine = [
+    "GARBAGE HEADER LINE 12345",
+    "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<", // 43 chars (dropped 1 trailing '<')
+    "L898902C36UTO7408122F1204159ZE184226B<<<<<10",
+    "EXTRA FOOTER SCAN NOISE 987654"
+  ].join("\n");
+  const resTd3 = tryParseMrz(rawWithShortLine, { referenceDate: REF_DATE });
+  assert.ok(resTd3, "Should successfully parse TD3 passport even with noisy surrounding lines and 43 chars");
+  assert.equal(resTd3.format, "TD3");
+  assert.equal(resTd3.surname, "ERIKSSON");
+  assert.equal(resTd3.given_names, "ANNA MARIA");
+  assert.equal(resTd3.document_number, "L898902C3");
+  assert.equal(resTd3.all_checks_passed, true);
+
+  // 3. TD1 (3 lines x 30 characters) ID card
+  const td1Text = [
+    "I<UTOD231458907<<<<<<<<<<<<<<<",
+    "7408122F1204159UTO<<<<<<<<<<<6",
+    "ERIKSSON<<ANNA<MARIA<<<<<<<<<<"
+  ].join("\n");
+  const resTd1 = tryParseMrz(td1Text, { referenceDate: REF_DATE });
+  assert.ok(resTd1, "Should successfully parse TD1 ID card");
+  assert.equal(resTd1.format, "TD1");
+  assert.equal(resTd1.surname, "ERIKSSON");
+  assert.equal(resTd1.given_names, "ANNA MARIA");
+  assert.equal(resTd1.document_number, "D23145890");
+  assert.equal(resTd1.all_checks_passed, true);
+
+  // 4. TD2 (2 lines x 36 characters) ID card
+  const td2Text = [
+    "I<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<",
+    "D231458907UTO7408122F1204159<<<<<<<6"
+  ].join("\n");
+  const resTd2 = tryParseMrz(td2Text, { referenceDate: REF_DATE });
+  assert.ok(resTd2, "Should successfully parse TD2 ID card");
+  assert.equal(resTd2.format, "TD2");
+  assert.equal(resTd2.surname, "ERIKSSON");
+  assert.equal(resTd2.given_names, "ANNA MARIA");
+  assert.equal(resTd2.document_number, "D23145890");
+  assert.equal(resTd2.all_checks_passed, true);
 });
