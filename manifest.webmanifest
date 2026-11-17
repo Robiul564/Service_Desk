@@ -1,7 +1,7 @@
 {
-  "name": "Passport Desk",
-  "short_name": "Passport Desk",
-  "description": "Offline-ready Bangladesh to Malaysia recruitment office records",
+  "name": "ZK Recruiting Agency",
+  "short_name": "ZK Recruiting",
+  "description": "ZK Recruiting Agency — Overseas employment & passport management",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
