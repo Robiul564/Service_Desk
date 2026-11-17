@@ -1,5 +1,5 @@
-const CACHE = "passport-desk-shell-v4";
-const APP_FILES = ["./", "./index.html", "./styles.css", "./config.js", "./app.js", "./mrz.mjs", "./manifest.webmanifest", "./icon.svg"];
+const CACHE = "passport-desk-shell-v5";
+const APP_FILES = ["./", "./index.html", "./styles.css", "./config.js", "./app.js", "./mrz.mjs", "./mrz-vision.mjs", "./manifest.webmanifest", "./icon.svg"];
 const EXTERNAL = [
   "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js",
   "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"

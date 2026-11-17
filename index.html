@@ -214,21 +214,38 @@
   </dialog>
   <dialog id="scanner-dialog" class="scanner-dialog">
     <div class="scanner-head">
-      <h2>Scan Passport MRZ</h2>
+      <div>
+        <h2 style="margin:0; font-size:18px;">🛂 Scan TD3 Passport</h2>
+        <span style="font-size:11.5px; color:#9ca3af;">ICAO 9303 · Auto-captures when 3 frames agree</span>
+      </div>
       <button type="button" class="icon-button scanner-close-btn" data-close aria-label="Close">✕</button>
     </div>
     <div class="video-wrap">
       <video id="camera-video" playsinline muted></video>
-      <div class="scan-guide">
-        <div class="scan-line"></div>
+      <div class="passport-frame-overlay" id="passport-guide">
+        <div class="passport-viz-zone">
+          <span class="passport-zone-label">PASSPORT DATA PAGE (PHOTO + PRINTED NAME)</span>
+        </div>
+        <div class="passport-mrz-zone">
+          <div class="scan-line"></div>
+          <span class="mrz-guide-label">P&lt;BGD SURNAME&lt;&lt;GIVEN&lt;NAMES&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;</span>
+          <span class="mrz-guide-label">A00000000&lt;BGD0000000M0000000&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;</span>
+        </div>
+      </div>
+      <div class="consensus-pill" id="consensus-pill" aria-live="polite">
+        <span class="consensus-dot" id="cdot-1"></span>
+        <span class="consensus-dot" id="cdot-2"></span>
+        <span class="consensus-dot" id="cdot-3"></span>
+        <span id="consensus-label">Align passport in frame</span>
       </div>
     </div>
-    <p id="scanner-status" role="status">Point camera at passport bottom lines, or choose photo.</p>
+    <p id="scanner-status" role="status" aria-live="polite">Align full passport data page inside the guide and hold steady.</p>
     <div class="scanner-actions">
-      <button id="use-best-button" class="primary full" disabled>Use best result</button>
       <div class="button-row">
-        <button id="torch-button" class="secondary" hidden>🔦 Torch</button>
-        <button id="photo-button" class="secondary">📷 Choose photo</button>
+        <button id="torch-button" type="button" class="secondary" hidden>🔦 Torch</button>
+        <button id="photo-button" type="button" class="primary">📷 Take / Choose Photo</button>
+      </div>
+      <div class="button-row">
         <button id="scanner-manual-btn" type="button" class="secondary">✏️ Manual Entry</button>
         <button type="button" data-close class="secondary">Cancel</button>
       </div>
@@ -236,22 +253,22 @@
     </div>
   </dialog>
 
-  <dialog id="scan-review-dialog" class="record-dialog" style="max-width: 520px;">
+  <dialog id="scan-review-dialog" class="record-dialog" style="max-width: 540px;">
     <div class="sheet-handle"></div>
     <div class="dialog-heading">
-      <h2>Verify Scanned Passport</h2>
+      <h2>Verify Scanned Passport (TD3)</h2>
       <button type="button" class="icon-button dialog-close-btn" data-close aria-label="Close">✕</button>
     </div>
     <div id="scan-review-content" class="scan-review-body">
-      <!-- Populated dynamically -->
+      <!-- Populated dynamically with editable fields, 5 ICAO checks & VIZ cross-verification -->
     </div>
-    <div class="dialog-footer" style="margin-top: 16px;">
+    <div class="dialog-footer" style="margin-top: 14px;">
       <div class="button-row">
-        <button type="button" id="btn-accept-scan" class="primary btn-lg full">✓ Accept &amp; Continue</button>
+        <button type="button" id="btn-accept-scan" class="primary btn-lg full">✓ Confirm &amp; Register Candidate</button>
       </div>
       <div class="button-row secondary-actions">
         <button type="button" id="btn-rescan" class="secondary">🔄 Rescan</button>
-        <button type="button" id="btn-manual-from-review" class="secondary">✏️ Edit Manually</button>
+        <button type="button" id="btn-manual-from-review" class="secondary">✏️ Empty Manual Form</button>
         <button type="button" data-close class="secondary">Cancel</button>
       </div>
     </div>

@@ -1,4 +1,5 @@
-import { parseMrz } from "./mrz.mjs";
+import { parseTd3Mrz, MrzFrameConsensus, crossVerifyNameWithViz } from "./mrz.mjs";
+import { preprocessMrzFromSource, preprocessVizFromSource } from "./mrz-vision.mjs";
 
 const TABLES = ["workers", "agents", "companies", "payments", "handovers", "expenses", "user_profiles", "history"];
 const DATA_TABLES = TABLES.filter(table => !["user_profiles", "history"].includes(table));
@@ -104,8 +105,9 @@ const state = {
   camera: null,
   scannerActive: false,
   scanBusy: false,
-  bestMrz: null,
+  mrzConsensus: new MrzFrameConsensus({ requiredFrames: 3 }),
   ocrWorker: null,
+  ocrMode: null,
   saving: false,
   db: null,
   dbUser: null,
@@ -1841,8 +1843,8 @@ function renderData() {
                 <button type="button" data-profile="${esc(profile.id)}" class="secondary" style="font-size:13px; padding:6px 12px; min-height:36px;">
                   ${profile.enabled ? 'Disable' : 'Enable'}
                 </button>
-                <button type="button" data-delete-user="${esc(profile.id)}" data-user-email="${esc(profile.email)}" class="danger" style="font-size:13px; padding:6px 12px; min-height:36px; display:inline-flex; align-items:center; gap:4px;" title="Delete account completely" aria-label="Delete user">
-                  🗑️ Delete
+                <button type="button" data-delete-user="${esc(profile.id)}" data-user-email="${esc(profile.email)}" class="danger" style="font-size:13px; padding:6px 10px; min-height:36px;" title="Delete account completely" aria-label="Delete user">
+                  🗑️
                 </button>
               ` : `<span class="tag good" style="font-weight:700;">Active Session</span>`}
             </div>
@@ -1957,99 +1959,59 @@ function renderData() {
     button.textContent = "Creating account…";
     try {
       let createdProfile = null;
-
-      // 1. Invoke Supabase Postgres RPC function admin_create_user directly (instant, bypasses email rate limits)
-      if (state.supabase) {
-        const { data, error } = await state.supabase.rpc("admin_create_user", {
-          p_email: email,
-          p_password: password,
-          p_role: role
-        });
-        if (error) {
-          throw new Error(error.message || "Failed to create user in database");
+      // 1. Try edge function first if deployed
+      try {
+        const { data, error } = await state.supabase.functions.invoke("admin-users", { body: { action: "create", email, password, role } });
+        if (!error && !data?.error && data?.profile) {
+          createdProfile = data.profile;
         }
-        createdProfile = data;
-      } else {
-        // Local-only offline fallback
-        createdProfile = {
-          id: uid(),
-          email,
-          role,
-          enabled: true,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        };
+      } catch (_) {}
+
+      // 2. Direct client signup fallback using independent client instance to preserve current admin session
+      if (!createdProfile && window.supabase && config.supabaseUrl && config.supabaseAnonKey) {
+        const authClient = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey, {
+          auth: { persistSession: false, autoRefreshToken: false }
+        });
+        const { data: signUpData, error: signUpErr } = await authClient.auth.signUp({ email, password });
+        if (signUpErr) throw signUpErr;
+        const newUserId = signUpData?.user?.id;
+        if (newUserId) {
+          // Update role in user_profiles using admin client
+          const { data: updatedProfile } = await state.supabase
+            .from("user_profiles")
+            .update({ email, role, enabled: true, updated_at: new Date().toISOString() })
+            .eq("id", newUserId)
+            .select("*")
+            .maybeSingle();
+          createdProfile = updatedProfile || { id: newUserId, email, role, enabled: true };
+        }
       }
 
       if (createdProfile) {
-        if (!state.rows.user_profiles) state.rows.user_profiles = [];
-        const existingIdx = state.rows.user_profiles.findIndex(p => p.id === createdProfile.id);
-        if (existingIdx >= 0) {
-          state.rows.user_profiles[existingIdx] = createdProfile;
-        } else {
-          state.rows.user_profiles.push(createdProfile);
-        }
         await saveLocal("user_profiles", createdProfile, false);
-        toast(`Account created for ${email} (${role}).`);
+        toast(`Account created for ${email} with role "${role}".`);
         $("#new-user-email").value = "";
         $("#new-user-password").value = "";
         renderData();
       } else {
-        throw new Error("Could not create account.");
+        throw new Error("Could not create account. Please ensure the email has a valid domain (e.g. staff@company.com).");
       }
     } catch (error) {
       toast(`Could not create account: ${error.message || "Failed"}`);
     } finally {
       button.disabled = false;
-      button.textContent = "➕ Create account";
+      button.textContent = "Create account";
     }
   });
-
   document.querySelectorAll("[data-restore]").forEach(button => button.onclick = async () => {
     const [table, id] = button.dataset.restore.split(":");
     const row = rowById(table, id);
     if (row) await saveLocal(table, { ...row, deleted_at: null, updated_at: new Date().toISOString() });
   });
-
   document.querySelectorAll("[data-profile]").forEach(button => button.onclick = async () => {
     const profile = rowById("user_profiles", button.dataset.profile);
     if (profile?.id === state.user.id) return toast("You cannot disable your own account.");
     if (profile) await saveLocal("user_profiles", { ...profile, enabled: !profile.enabled, updated_at: new Date().toISOString() });
-  });
-
-  document.querySelectorAll("[data-delete-user]").forEach(button => {
-    button.onclick = async () => {
-      const userId = button.dataset.deleteUser;
-      const userEmail = button.dataset.userEmail || "this account";
-      if (userId === state.user?.id) return toast("You cannot delete your own active admin account.");
-      if (!window.confirm(`Permanently delete account "${userEmail}"?\nThis user will lose access immediately.`)) return;
-
-      button.disabled = true;
-      button.textContent = "Deleting…";
-
-      try {
-        if (state.supabase) {
-          const { error } = await state.supabase.rpc("admin_delete_user", { p_user_id: userId });
-          if (error && !error.message?.includes("User not found")) {
-            throw error;
-          }
-        }
-
-        // Clean up from local state and IndexedDB
-        state.rows.user_profiles = (state.rows.user_profiles || []).filter(p => p.id !== userId);
-        const db = await openDb();
-        const tx = db.transaction(["user_profiles"], "readwrite");
-        await tx.objectStore("user_profiles").delete(userId);
-        await tx.done;
-
-        toast(`Account "${userEmail}" deleted successfully.`);
-        renderData();
-      } catch (err) {
-        toast(`Could not delete account: ${err.message || err}`);
-        button.disabled = false;
-        button.textContent = "🗑️ Delete";
-      }
-    };
   });
 }
 
@@ -2352,70 +2314,171 @@ async function restoreBackup(file) {
   toast("Backup restored. Changes are queued for sync.");
 }
 
-async function getOcrWorker() {
+async function getOcrWorker(mode = "mrz") {
   if (!window.Tesseract) await loadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js");
   navigator.serviceWorker?.controller?.postMessage("CACHE_OCR");
   if (!state.ocrWorker) {
-    $("#scanner-status").textContent = "Loading OCR engine. The first download needs internet.";
+    $("#scanner-status").textContent = "Loading OCR engine… (first load needs internet)";
     state.ocrWorker = await window.Tesseract.createWorker("eng");
-    await state.ocrWorker.setParameters({ tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<", tessedit_pageseg_mode: "6" });
+    state.ocrMode = null;
+  }
+  if (state.ocrMode !== mode) {
+    if (mode === "mrz") {
+      // Strictly restrict charset to ICAO 9303 A-Z, 0-9, "<" and disable English dictionaries
+      // so Tesseract never mutates foreign names or "<<<<" fillers into dictionary words.
+      await state.ocrWorker.setParameters({
+        tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<",
+        tessedit_pageseg_mode: "6",
+        load_system_dawg: "0",
+        load_freq_dawg: "0",
+        load_punc_dawg: "0",
+        load_number_dawg: "0",
+        load_unambig_dawg: "0",
+        load_bigram_dawg: "0",
+        user_defined_dpi: "300"
+      });
+    } else {
+      // VIZ (Visual Inspection Zone) printed name cross-verification mode
+      await state.ocrWorker.setParameters({
+        tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz -'",
+        tessedit_pageseg_mode: "6",
+        load_system_dawg: "0",
+        load_freq_dawg: "0",
+        user_defined_dpi: "300"
+      });
+    }
+    state.ocrMode = mode;
   }
   return state.ocrWorker;
 }
 
-function cropImage(source, sx, sy, sw, sh) {
-  const scale = Math.min(2, 1800 / sw);
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(sw * scale); canvas.height = Math.round(sh * scale);
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  context.drawImage(source, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-  const image = context.getImageData(0, 0, canvas.width, canvas.height);
-  let minimum = 255; let maximum = 0;
-  for (let i = 0; i < image.data.length; i += 4) {
-    const gray = 0.299 * image.data[i] + 0.587 * image.data[i + 1] + 0.114 * image.data[i + 2];
-    image.data[i] = gray; minimum = Math.min(minimum, gray); maximum = Math.max(maximum, gray);
-  }
-  const factor = 255 / Math.max(1, maximum - minimum);
-  for (let i = 0; i < image.data.length; i += 4) image.data[i] = image.data[i + 1] = image.data[i + 2] = (image.data[i] - minimum) * factor;
-  context.putImageData(image, 0, 0);
-  return canvas;
+/**
+ * Release canvas bitmap memory immediately so sensitive passport pixels are never retained.
+ */
+function releaseCanvas(canvas) {
+  if (!canvas) return;
+  try {
+    canvas.width = 0;
+    canvas.height = 0;
+  } catch (_) {}
 }
 
-async function recognize(source, sx, sy, sw, sh) {
-  const worker = await getOcrWorker();
-  const result = await worker.recognize(cropImage(source, sx, sy, sw, sh));
-  return parseMrz(result.data.text);
+/**
+ * Map the visible passport guide frame (VIZ + MRZ zones) into exact natural video pixel ROIs,
+ * accounting for `object-fit: cover` scaling on portrait vs landscape phone screens.
+ */
+function computeVideoRois(video) {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  const vRect = video.getBoundingClientRect();
+  const guideEl = $("#passport-guide");
+  const mrzEl = guideEl?.querySelector(".passport-mrz-zone");
+  const vizEl = guideEl?.querySelector(".passport-viz-zone");
+
+  if (!vRect.width || !vRect.height || !mrzEl || !vizEl) {
+    return {
+      mrzRoi: { sx: 0, sy: vh * 0.56, sw: vw, sh: vh * 0.28 },
+      vizRoi: { sx: 0, sy: vh * 0.14, sw: vw, sh: vh * 0.42 }
+    };
+  }
+
+  // `object-fit: cover` uniform scale and center crop offset
+  const scale = Math.max(vRect.width / vw, vRect.height / vh);
+  const renderedW = vw * scale;
+  const renderedH = vh * scale;
+  const offsetX = (renderedW - vRect.width) / 2;
+  const offsetY = (renderedH - vRect.height) / 2;
+
+  const mapRect = (rect, padXRatio = 0.02, padYRatio = 0.08) => {
+    const rawX = (rect.left - vRect.left + offsetX) / scale;
+    const rawY = (rect.top - vRect.top + offsetY) / scale;
+    const rawW = rect.width / scale;
+    const rawH = rect.height / scale;
+    const padX = rawW * padXRatio;
+    const padY = rawH * padYRatio;
+    const sx = Math.max(0, rawX - padX);
+    const sy = Math.max(0, rawY - padY);
+    const ex = Math.min(vw, rawX + rawW + padX);
+    const ey = Math.min(vh, rawY + rawH + padY);
+    return { sx, sy, sw: Math.max(32, ex - sx), sh: Math.max(24, ey - sy) };
+  };
+
+  return {
+    mrzRoi: mapRect(mrzEl.getBoundingClientRect(), 0.03, 0.14),
+    vizRoi: mapRect(vizEl.getBoundingClientRect(), 0.02, 0.04)
+  };
+}
+
+function updateConsensusUi(count, required, label, frameState = "") {
+  for (let i = 1; i <= 3; i += 1) {
+    const dot = $(`#cdot-${i}`);
+    if (dot) dot.classList.toggle("filled", i <= count);
+  }
+  const labelEl = $("#consensus-label");
+  if (labelEl) labelEl.textContent = label;
+  const guide = $("#passport-guide");
+  if (guide) {
+    guide.classList.toggle("locked", frameState === "locked");
+    guide.classList.toggle("warn", frameState === "warn");
+  }
+}
+
+async function runVizCrossVerify(source, vizRoi, mrzData, skewAngle = 0) {
+  let vizCanvas = null;
+  try {
+    vizCanvas = preprocessVizFromSource(source, vizRoi, skewAngle);
+    if (!vizCanvas) {
+      return crossVerifyNameWithViz(mrzData, "");
+    }
+    const worker = await getOcrWorker("viz");
+    const res = await worker.recognize(vizCanvas);
+    return crossVerifyNameWithViz(mrzData, res?.data?.text || "");
+  } catch (_) {
+    return crossVerifyNameWithViz(mrzData, "");
+  } finally {
+    releaseCanvas(vizCanvas);
+  }
 }
 
 async function startScanner() {
   $("#scanner-dialog").showModal();
   state.scannerActive = true;
-  state.bestMrz = null;
-  $("#use-best-button").disabled = true;
+  state.scanBusy = false;
+  state.mrzConsensus.reset();
+  updateConsensusUi(0, 3, "Align passport in frame");
   $("#scanner-status").textContent = "Requesting camera permission…";
   try {
     if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error("Live camera stream requires HTTPS. Use the button below to take a photo directly with your phone camera.");
+      throw new Error("Live camera stream requires HTTPS. Use the photo button below.");
     }
-    state.camera = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } });
+    state.camera = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+    });
     const video = $("#camera-video");
     video.srcObject = state.camera;
     await video.play();
     const track = state.camera.getVideoTracks()[0];
     const capabilities = track.getCapabilities?.() || {};
-    if (capabilities.focusMode?.includes("continuous")) track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => {});
+    if (capabilities.focusMode?.includes("continuous")) {
+      track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => {});
+    }
     $("#torch-button").hidden = !capabilities.torch;
     let torch = false;
     $("#torch-button").onclick = async () => {
       torch = !torch;
-      try { await track.applyConstraints({ advanced: [{ torch }] }); $("#torch-button").textContent = torch ? "🔦 Torch off" : "🔦 Torch on"; }
-      catch { toast("Torch is not available on this camera."); }
+      try {
+        await track.applyConstraints({ advanced: [{ torch }] });
+        $("#torch-button").textContent = torch ? "🔦 Torch off" : "🔦 Torch on";
+      } catch {
+        toast("Torch is not available on this camera.");
+      }
     };
-    $("#scanner-status").textContent = "Fit the two MRZ lines inside the green guide and hold still.";
+    $("#scanner-status").textContent = "Fit the passport page inside the frame with both bottom MRZ lines in the green strip.";
     scannerTick();
   } catch (error) {
     const isDenied = error.name === "NotAllowedError";
-    $("#scanner-status").innerHTML = `<span style="color:#fbbf24;font-weight:600;">${isDenied ? "Camera permission denied." : "Live video stream unavailable on this network."}</span><br>Tap <b>Take photo with phone camera</b> below to scan:`;
+    $("#scanner-status").innerHTML = `<span style="color:#fbbf24;font-weight:600;">${isDenied ? "Camera permission denied." : "Live camera unavailable."}</span><br>Tap <b>📷 Take / Choose Photo</b> below to scan a passport photo.`;
   }
 }
 
@@ -2424,24 +2487,63 @@ async function scannerTick() {
   const video = $("#camera-video");
   if (!state.scanBusy && video.readyState >= 2 && video.videoWidth) {
     state.scanBusy = true;
+    let mrzCanvas = null;
     try {
-      const result = await recognize(video, 0, video.videoHeight * 0.34, video.videoWidth, video.videoHeight * 0.32);
-      if (result && (!state.bestMrz || result.score > state.bestMrz.score)) {
-        state.bestMrz = result;
-        $("#use-best-button").disabled = false;
-        $("#scanner-status").textContent = result.score === 3 ? "Passport read. All three check digits passed." : `Read found · ${result.score}/3 check digits passed. Verify the highlighted fields.`;
-        if (result.score === 3) return showScanReview(result);
-      } else if (!result) $("#scanner-status").textContent = "Move closer, reduce glare, and keep both lines inside the guide.";
+      const { mrzRoi, vizRoi } = computeVideoRois(video);
+      const pre = preprocessMrzFromSource(video, mrzRoi);
+      mrzCanvas = pre.canvas;
+
+      if (!pre.quality.ok || !mrzCanvas) {
+        updateConsensusUi(state.mrzConsensus.consecutiveMatches, 3, pre.quality.message, "warn");
+        $("#scanner-status").textContent = pre.quality.message;
+      } else {
+        const worker = await getOcrWorker("mrz");
+        const ocr = await worker.recognize(mrzCanvas);
+        releaseCanvas(mrzCanvas);
+        mrzCanvas = null;
+
+        const consensus = state.mrzConsensus.push(ocr?.data?.text || "");
+
+        if (consensus.locked && consensus.data) {
+          updateConsensusUi(3, 3, "✓ 3/3 Locked — checking printed name…", "locked");
+          $("#scanner-status").textContent = "All 5 ICAO check digits verified (3/3 frames). Cross-checking printed name…";
+          const vizCheck = await runVizCrossVerify(video, vizRoi, consensus.data, pre.skewAngle);
+          const finalResult = { ...consensus.data, viz: vizCheck, source: "live_camera" };
+          return showScanReview(finalResult);
+        }
+
+        if (consensus.validFrame) {
+          updateConsensusUi(
+            consensus.consecutive,
+            consensus.required,
+            `Hold steady — verifying ${consensus.consecutive}/${consensus.required}`,
+            "locked"
+          );
+          $("#scanner-status").textContent = `Hold steady — ${consensus.consecutive}/${consensus.required} agreeing frames…`;
+        } else {
+          updateConsensusUi(
+            consensus.consecutive,
+            consensus.required,
+            consensus.consecutive > 0 ? `Hold steady (${consensus.consecutive}/${consensus.required})` : "Align MRZ in green box",
+            ""
+          );
+          $("#scanner-status").textContent = "Move closer, reduce glare, and keep both 44-char MRZ lines level inside the green strip.";
+        }
+      }
     } catch (error) {
-      $("#scanner-status").textContent = error.message || "OCR failed. Choose a clear photo or enter details manually.";
-    } finally { state.scanBusy = false; }
+      $("#scanner-status").textContent = error.message || "OCR error. Hold steady, retake photo, or use Manual Entry.";
+    } finally {
+      releaseCanvas(mrzCanvas);
+      state.scanBusy = false;
+    }
   }
-  if (state.scannerActive) setTimeout(scannerTick, 800);
+  if (state.scannerActive) setTimeout(scannerTick, 450);
 }
 
 function stopScanner() {
   state.scannerActive = false;
   state.scanBusy = false;
+  state.mrzConsensus.reset();
   state.camera?.getTracks().forEach(track => track.stop());
   state.camera = null;
   $("#camera-video").srcObject = null;
@@ -2457,110 +2559,258 @@ function showScanReview(result) {
     : null;
 
   const checks = result.checks || {};
-  const dobFormatted = result.dob || "Unrecognized";
-  const expiryFormatted = result.passport_expiry || "Unrecognized";
+  const viz = result.viz || { status: "unavailable", score: 0, unmatchedTokens: [], message: "Printed page name could not be cross-checked." };
+  const needsManualNameConfirm = viz.status !== "verified" || Boolean(result.name_truncated);
   const expiryStatus = result.passport_expiry ? expiryBucket(result.passport_expiry) : "Unknown";
   const expiryTag = expiryStatus === "Expired" ? "bad" : expiryStatus.startsWith("Within") ? "warn" : "good";
 
-  let reviewHtml = `
+  const vizBannerHtml = viz.status === "verified"
+    ? `<div class="viz-banner verified">
+         <strong>✓ Printed Page Cross-Check Passed</strong>
+         <span>${esc(viz.message)}</span>
+       </div>`
+    : `<div class="viz-banner mismatch">
+         <strong>⚠️ ${viz.status === "mismatch" ? "Printed Name Mismatch — Verify Carefully" : "Manual Name Check Required"}</strong>
+         <span>${esc(viz.message)}</span>
+         ${viz.unmatchedTokens?.length ? `<span style="font-size:12px;">Check token(s): <b>${esc(viz.unmatchedTokens.join(", "))}</b></span>` : ""}
+         <label class="viz-confirm-check">
+           <input type="checkbox" id="rev-viz-confirmed">
+           <span>I checked the printed passport page and confirmed Surname &amp; Given Names below are exact.</span>
+         </label>
+       </div>`;
+
+  const truncatedHtml = result.name_truncated
+    ? `<div class="warning" style="margin:0; font-size:12.5px;">
+         <strong>ℹ️ 39-Character ICAO Limit Reached:</strong> Long name may be truncated in the MRZ. Complete any missing letters in Given Names / Surname below.
+       </div>`
+    : "";
+
+  const duplicateHtml = duplicate
+    ? `<div class="error" style="margin:0; font-size:13px; line-height:1.45;">
+         <strong>⚠️ DUPLICATE PASSPORT DETECTED</strong><br>
+         Passport <b>${esc(result.passport_no)}</b> is already registered to <b>${esc(duplicate.name)}</b> (${esc(duplicate.wid || duplicate.id)}). Duplicate registration is blocked.
+       </div>`
+    : "";
+
+  const reviewHtml = `
+    ${vizBannerHtml}
+    ${truncatedHtml}
+    ${duplicateHtml}
+
     <div class="scan-review-card">
-      <div class="review-row">
-        <span class="review-label">Document Standard</span>
-        <span class="review-value">${esc(result.format === "TD1" ? "National ID Card (TD1)" : "Standard Passport (TD3)")}</span>
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:2px;">
+        <span style="font-size:12px; font-weight:750; color:var(--green-text); text-transform:uppercase; letter-spacing:0.5px;">
+          Editable Candidate Details (TD3 · ${esc(result.issuing_state || "—")})
+        </span>
+        ${statusTag(expiryStatus, expiryTag)}
       </div>
-      <div class="review-row">
-        <span class="review-label">Candidate Name</span>
-        <span class="review-value" style="font-size:15px; color:var(--green); font-weight:700;">${esc(result.name || "—")}</span>
+
+      <div class="scan-review-edit-grid two-col">
+        <label>Surname (Last Name)
+          <input id="rev-surname" type="text" value="${esc(result.surname || "")}" autocomplete="off" required>
+        </label>
+        <label>Given Names (First / Middle)
+          <input id="rev-given" type="text" value="${esc(result.given_names || "")}" autocomplete="off">
+        </label>
       </div>
-      <div class="review-row">
-        <span class="review-label">Passport Number</span>
-        <span class="review-value" style="font-family:ui-monospace, monospace; font-size:15px;">${esc(result.passport_no || "—")}</span>
+
+      <div class="review-row" style="padding-top:4px;">
+        <span class="review-label">Saved Full Name</span>
+        <span class="review-value" id="rev-full-preview" style="font-size:15px; color:var(--green); font-weight:750;">${esc(result.name || "—")}</span>
       </div>
-      <div class="review-row">
-        <span class="review-label">Date of Birth</span>
-        <span class="review-value">${esc(dobFormatted)}</span>
-      </div>
-      <div class="review-row">
-        <span class="review-label">Passport Expiry</span>
-        <span class="review-value">${esc(expiryFormatted)} ${statusTag(expiryStatus, expiryTag)}</span>
-      </div>
-      <div class="review-row">
-        <span class="review-label">Nationality</span>
-        <span class="review-value">${esc(result.nationality || "—")}</span>
-      </div>
-      <div class="review-row">
-        <span class="review-label">Sex</span>
-        <span class="review-value">${esc(result.sex || "—")}</span>
+
+      <div class="scan-review-edit-grid two-col">
+        <label>Passport Number
+          <input id="rev-passport-no" type="text" value="${esc(result.passport_no || "")}" style="font-family:ui-monospace, monospace;" autocomplete="off" required>
+        </label>
+        <label>Nationality
+          <input id="rev-nationality" type="text" value="${esc(result.nationality || "")}" autocomplete="off">
+        </label>
+        <label>Date of Birth
+          <input id="rev-dob" type="date" value="${esc(result.dob || "")}" style="text-transform:none;">
+        </label>
+        <label>Passport Expiry
+          <input id="rev-expiry" type="date" value="${esc(result.passport_expiry || "")}" style="text-transform:none;">
+        </label>
+        <label>Sex
+          <select id="rev-sex" style="text-transform:none;">
+            <option value="" ${!result.sex ? "selected" : ""}>Unspecified</option>
+            <option value="M" ${result.sex === "M" ? "selected" : ""}>M (Male)</option>
+            <option value="F" ${result.sex === "F" ? "selected" : ""}>F (Female)</option>
+          </select>
+        </label>
+        <label>Issuing State
+          <input type="text" value="${esc(result.issuing_state || "—")}" readonly style="opacity:0.75;">
+        </label>
       </div>
     </div>
 
-    <div style="margin-top: 12px;">
-      <span style="font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">ICAO 9303 Security Checksums:</span>
+    <div>
+      <span style="font-size:11.5px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">ICAO Doc 9303 Part 4 Checksums (5/5 Verified):</span>
       <div class="review-checks-grid">
-        <div class="check-badge ${checks.passport ? 'pass' : 'fail'}">${checks.passport ? '✓ Passport Checksum' : '⚠️ Passport Checksum'}</div>
-        <div class="check-badge ${checks.dob ? 'pass' : 'fail'}">${checks.dob ? '✓ DOB Checksum' : '⚠️ DOB Checksum'}</div>
-        <div class="check-badge ${checks.expiry ? 'pass' : 'fail'}">${checks.expiry ? '✓ Expiry Checksum' : '⚠️ Expiry Checksum'}</div>
-        <div class="check-badge ${checks.composite !== false ? 'pass' : 'fail'}">${checks.composite !== false ? '✓ Composite Checksum' : '⚠️ Composite Checksum'}</div>
+        <div class="check-badge ${checks.passport ? "pass" : "fail"}">${checks.passport ? "✓ Passport No." : "✕ Passport No."}</div>
+        <div class="check-badge ${checks.dob ? "pass" : "fail"}">${checks.dob ? "✓ Date of Birth" : "✕ Date of Birth"}</div>
+        <div class="check-badge ${checks.expiry ? "pass" : "fail"}">${checks.expiry ? "✓ Expiry Date" : "✕ Expiry Date"}</div>
+        <div class="check-badge ${checks.personal ? "pass" : "fail"}">${checks.personal ? "✓ Personal No." : "✕ Personal No."}</div>
+        <div class="check-badge ${checks.composite ? "pass" : "fail"}" style="grid-column: 1 / -1;">${checks.composite ? "✓ Composite Check Digit Verified" : "✕ Composite Check Digit"}</div>
       </div>
     </div>
   `;
 
-  if (duplicate) {
-    reviewHtml += `
-      <div class="warning" style="margin-top:12px; border-radius:10px; background:var(--red-light); color:var(--red); border:1px solid color-mix(in srgb, var(--red) 30%, transparent); font-size:13px; line-height:1.4;">
-        <strong>⚠️ DUPLICATE PASSPORT DETECTED</strong><br>
-        Passport <b>${esc(result.passport_no)}</b> is already registered to candidate <b>${esc(duplicate.name)}</b> (${esc(duplicate.wid || duplicate.id)}). Duplicate passport entries are blocked.
-      </div>
-    `;
-  }
-
   $("#scan-review-content").innerHTML = reviewHtml;
 
+  const updateFullPreview = () => {
+    const sur = ($("#rev-surname")?.value || "").trim().replace(/\s+/g, " ").toUpperCase();
+    const giv = ($("#rev-given")?.value || "").trim().replace(/\s+/g, " ").toUpperCase();
+    const combined = giv ? `${giv} ${sur}`.trim() : sur;
+    const previewEl = $("#rev-full-preview");
+    if (previewEl) previewEl.textContent = combined || "—";
+  };
+  $("#rev-surname")?.addEventListener("input", updateFullPreview);
+  $("#rev-given")?.addEventListener("input", updateFullPreview);
+
   const acceptBtn = $("#btn-accept-scan");
-  if (duplicate) {
-    acceptBtn.disabled = true;
-    acceptBtn.textContent = "⚠️ Cannot Save Duplicate";
-  } else {
-    acceptBtn.disabled = false;
-    acceptBtn.textContent = "✓ Confirm & Fill Record";
-  }
+  const updateAcceptButton = () => {
+    const pp = ($("#rev-passport-no")?.value || "").trim().toUpperCase();
+    const isDup = pp && active("workers").some(row => row.passport_no && row.passport_no.toUpperCase() === pp);
+    const vizBox = $("#rev-viz-confirmed");
+    const vizOk = !needsManualNameConfirm || !vizBox || vizBox.checked;
+
+    if (isDup) {
+      acceptBtn.disabled = true;
+      acceptBtn.textContent = "⚠️ Cannot Register Duplicate Passport";
+    } else if (!vizOk) {
+      acceptBtn.disabled = true;
+      acceptBtn.textContent = "Confirm Name Above or Rescan";
+    } else {
+      acceptBtn.disabled = false;
+      acceptBtn.textContent = "✓ Confirm & Register Candidate";
+    }
+  };
+
+  $("#rev-passport-no")?.addEventListener("input", updateAcceptButton);
+  $("#rev-viz-confirmed")?.addEventListener("change", updateAcceptButton);
+  updateAcceptButton();
 
   $("#scan-review-dialog").showModal();
 }
 
-function proceedWithScannedResult(result) {
+function confirmScanReview() {
+  if (!state.scannedMrz) return;
+  const surname = ($("#rev-surname")?.value || "").trim().replace(/\s+/g, " ").toUpperCase();
+  const givenNames = ($("#rev-given")?.value || "").trim().replace(/\s+/g, " ").toUpperCase();
+  const fullName = givenNames ? `${givenNames} ${surname}`.trim() : surname;
+  const passportNo = ($("#rev-passport-no")?.value || "").trim().toUpperCase();
+  const dob = $("#rev-dob")?.value || "";
+  const expiry = $("#rev-expiry")?.value || "";
+  const sex = $("#rev-sex")?.value || "";
+  const nationality = ($("#rev-nationality")?.value || "").trim();
+
+  if (!fullName) {
+    toast("Candidate name cannot be empty.");
+    return;
+  }
+  if (!passportNo) {
+    toast("Passport number cannot be empty.");
+    return;
+  }
+  const duplicate = active("workers").find(row => row.passport_no?.toUpperCase() === passportNo);
+  if (duplicate) {
+    toast(`Duplicate passport already saved for ${duplicate.wid || duplicate.name}.`);
+    return;
+  }
+
+  const fields = {
+    name: fullName,
+    passport_no: passportNo,
+    dob,
+    passport_expiry: expiry,
+    sex,
+    nationality,
+    passport_status: "Received"
+  };
+
+  state.scannedMrz = null;
   $("#scan-review-dialog")?.close();
-  const warnings = [];
-  for (const [key, label] of [["passport", "passport number"], ["dob", "date of birth"], ["expiry", "passport expiry"]]) if (!result.checks?.[key]) warnings.push(`Check digit failed for ${label}. Verify it against the passport.`);
-  if (!result.dob) warnings.push("Date of birth could not be interpreted. Verify it against the passport.");
-  if (!result.passport_expiry) warnings.push("Passport expiry could not be interpreted. Verify it against the passport.");
-  const duplicate = active("workers").find(row => row.passport_no?.toUpperCase() === result.passport_no?.toUpperCase());
-  if (duplicate) warnings.push(`Duplicate passport already saved for ${duplicate.wid || duplicate.name}.`);
-  const { checks, score, format, ...fields } = result;
-  openForm("workers", null, { warnings, defaults: fields });
+  openForm("workers", null, { warnings: [], defaults: fields });
   for (const [key, value] of Object.entries(fields)) {
     const field = $(`#field-${key}`);
     if (field && value) field.value = value;
   }
-  $("#form-warning").hidden = warnings.length === 0;
-  $("#form-warning").innerHTML = warnings.map(esc).join("<br>");
+  $("#form-warning").hidden = true;
+  $("#form-warning").innerHTML = "";
 }
 
 async function readPhoto(file) {
-  $("#scanner-status").textContent = "Reading passport photo…";
+  $("#scanner-status").textContent = "Analyzing passport photo (TD3 2×44)…";
+  updateConsensusUi(0, 3, "Processing photo…", "");
   let bitmap = null;
   try {
     bitmap = await createImageBitmap(file);
-    let best = null;
-    for (const [start, height] of [[0.60, 0.4], [0.48, 0.52], [0, 1]]) {
-      const result = await recognize(bitmap, 0, bitmap.height * start, bitmap.width, bitmap.height * height);
-      if (result && (!best || result.score > best.score)) best = result;
-      if (best?.score === 3) break;
+    const w = bitmap.width;
+    const h = bitmap.height;
+
+    // Candidate bottom MRZ strips + adaptive threshold sensitivities
+    const bands = [
+      { sy: h * 0.65, sh: h * 0.35, vizSy: h * 0.08, vizSh: h * 0.56 },
+      { sy: h * 0.55, sh: h * 0.45, vizSy: h * 0.05, vizSh: h * 0.50 },
+      { sy: h * 0.72, sh: h * 0.28, vizSy: h * 0.10, vizSh: h * 0.60 },
+      { sy: 0, sh: h, vizSy: 0, vizSh: h * 0.65 }
+    ];
+
+    let verified = null;
+    let lastError = "No valid 2×44 TD3 passport MRZ found. Ensure both bottom lines are flat, sharp, and glare-free.";
+    let matchedBand = null;
+    let matchedSkew = 0;
+
+    const worker = await getOcrWorker("mrz");
+
+    for (const band of bands) {
+      for (const tPercent of [12, 16]) {
+        let mrzCanvas = null;
+        try {
+          const pre = preprocessMrzFromSource(
+            bitmap,
+            { sx: 0, sy: band.sy, sw: w, sh: band.sh },
+            { skipQualityGate: true, tPercent }
+          );
+          mrzCanvas = pre.canvas;
+          if (!mrzCanvas) continue;
+          const ocr = await worker.recognize(mrzCanvas);
+          const parsed = parseTd3Mrz(ocr?.data?.text || "");
+          if (parsed.valid && parsed.data) {
+            verified = parsed.data;
+            matchedBand = band;
+            matchedSkew = pre.skewAngle;
+            break;
+          } else if (parsed.errors?.length) {
+            lastError = parsed.errors[0];
+          }
+        } finally {
+          releaseCanvas(mrzCanvas);
+        }
+      }
+      if (verified) break;
     }
-    if (best) showScanReview(best);
-    else $("#scanner-status").textContent = "MRZ not found. Use a sharper photo with both bottom lines visible.";
+
+    if (verified) {
+      updateConsensusUi(3, 3, "✓ 5/5 Check digits passed — verifying printed name…", "locked");
+      $("#scanner-status").textContent = "All 5 ICAO check digits verified. Cross-checking printed name…";
+      const vizCheck = await runVizCrossVerify(
+        bitmap,
+        { sx: 0, sy: matchedBand.vizSy, sw: w, sh: matchedBand.vizSh },
+        verified,
+        matchedSkew
+      );
+      showScanReview({ ...verified, viz: vizCheck, source: "photo" });
+    } else {
+      // Strictly reject unchecked / failed scans — never display wrong data as valid!
+      updateConsensusUi(0, 3, "Rescan required", "warn");
+      $("#scanner-status").textContent = `Rescan required: ${lastError}`;
+    }
   } catch (error) {
-    $("#scanner-status").textContent = `OCR could not read this photo: ${error.message}. Enter passport details manually.`;
+    updateConsensusUi(0, 3, "Photo read failed", "warn");
+    $("#scanner-status").textContent = `Could not read photo: ${error.message || "Try again or use Manual Entry."}`;
   } finally {
     try { bitmap?.close?.(); } catch (_) {}
   }
@@ -2746,13 +2996,12 @@ async function boot() {
   document.querySelectorAll("[data-close]").forEach(button => button.onclick = () => button.closest("dialog").close());
   setupAgencyDialog();
   setupTakebackDialog();
-  $("#use-best-button").onclick = () => state.bestMrz && showScanReview(state.bestMrz);
   $("#scanner-manual-btn")?.addEventListener("click", () => {
     stopScanner();
     openForm("workers");
   });
   $("#btn-accept-scan")?.addEventListener("click", () => {
-    if (state.scannedMrz) proceedWithScannedResult(state.scannedMrz);
+    confirmScanReview();
   });
   $("#btn-rescan")?.addEventListener("click", () => {
     $("#scan-review-dialog")?.close();
