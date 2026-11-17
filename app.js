@@ -1813,7 +1813,44 @@ function renderFinance() {
 
 function renderData() {
   const trash = DATA_TABLES.flatMap(table => state.rows[table].filter(row => row.deleted_at).map(row => ({ table, row })));
-  const adminPanel = state.role === "admin" ? `<section class="card"><h3>Accounts</h3><p class="meta">Create a staff login and assign a role. Disabled accounts retain their history.</p><label>New user email<input id="new-user-email" type="email" autocomplete="off"></label><label>Temporary password<input id="new-user-password" type="password" autocomplete="new-password"></label><label>Role<select id="new-user-role"><option value="staff">Staff (read/write)</option><option value="viewer">Viewer (read only)</option><option value="admin">Admin</option></select></label><button id="create-user" class="primary">Create account</button>${active("user_profiles").map(profile => `<div class="record-title card"><span>${esc(profile.email)} · ${esc(profile.role)} · ${profile.enabled ? "Enabled" : "Disabled"}</span><button data-profile="${esc(profile.id)}">${profile.enabled ? "Disable" : "Enable"}</button></div>`).join("") || '<p class="empty">No user profiles.</p>'}</section>` : "";
+  const adminPanel = state.role === "admin" ? `<section class="card">
+    <h3>Accounts</h3>
+    <p class="meta">Create a staff login and assign a role. Accounts are confirmed immediately without email rate limits.</p>
+    <label>New user email<input id="new-user-email" type="email" placeholder="staff@zkrecruiting.com" autocomplete="off"></label>
+    <label>Temporary password<input id="new-user-password" type="password" placeholder="At least 8 characters" autocomplete="new-password"></label>
+    <label>Role<select id="new-user-role">
+      <option value="staff">Staff (read/write)</option>
+      <option value="viewer">Viewer (read only)</option>
+      <option value="admin">Admin (full access)</option>
+    </select></label>
+    <button id="create-user" class="primary btn-lg" style="margin-top:12px;">➕ Create account</button>
+    <div style="margin-top:16px;">
+      <h4 style="font-size:13px; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px; color:var(--muted);">Registered Users (${active("user_profiles").length})</h4>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        ${active("user_profiles").map(profile => `
+          <div class="record-title card" style="margin:0; padding:12px 14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <div>
+              <strong style="font-size:14px;">${esc(profile.email)}</strong>
+              <div class="meta" style="margin-top:2px;">
+                <span class="tag ${profile.role === 'admin' ? 'good' : 'warn'}">${esc(profile.role.toUpperCase())}</span>
+                · <span style="color:${profile.enabled ? 'var(--good)' : 'var(--muted)'}; font-weight:600;">${profile.enabled ? '● Enabled' : '○ Disabled'}</span>
+              </div>
+            </div>
+            <div style="display:flex; gap:6px; align-items:center;">
+              ${profile.id !== state.user?.id ? `
+                <button type="button" data-profile="${esc(profile.id)}" class="secondary" style="font-size:13px; padding:6px 12px; min-height:36px;">
+                  ${profile.enabled ? 'Disable' : 'Enable'}
+                </button>
+                <button type="button" data-delete-user="${esc(profile.id)}" data-user-email="${esc(profile.email)}" class="danger" style="font-size:13px; padding:6px 12px; min-height:36px; display:inline-flex; align-items:center; gap:4px;" title="Delete account completely" aria-label="Delete user">
+                  🗑️ Delete
+                </button>
+              ` : `<span class="tag good" style="font-weight:700;">Active Session</span>`}
+            </div>
+          </div>
+        `).join("") || '<p class="empty">No user profiles.</p>'}
+      </div>
+    </div>
+  </section>` : "";
   const configured = !String(config.supabaseUrl || "").includes("PASTE") && config.supabaseAnonKey && !String(config.supabaseAnonKey).includes("PASTE");
 
   $("#page-data").innerHTML = `<h2>More</h2>
@@ -1920,59 +1957,99 @@ function renderData() {
     button.textContent = "Creating account…";
     try {
       let createdProfile = null;
-      // 1. Try edge function first if deployed
-      try {
-        const { data, error } = await state.supabase.functions.invoke("admin-users", { body: { action: "create", email, password, role } });
-        if (!error && !data?.error && data?.profile) {
-          createdProfile = data.profile;
-        }
-      } catch (_) {}
 
-      // 2. Direct client signup fallback using independent client instance to preserve current admin session
-      if (!createdProfile && window.supabase && config.supabaseUrl && config.supabaseAnonKey) {
-        const authClient = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey, {
-          auth: { persistSession: false, autoRefreshToken: false }
+      // 1. Invoke Supabase Postgres RPC function admin_create_user directly (instant, bypasses email rate limits)
+      if (state.supabase) {
+        const { data, error } = await state.supabase.rpc("admin_create_user", {
+          p_email: email,
+          p_password: password,
+          p_role: role
         });
-        const { data: signUpData, error: signUpErr } = await authClient.auth.signUp({ email, password });
-        if (signUpErr) throw signUpErr;
-        const newUserId = signUpData?.user?.id;
-        if (newUserId) {
-          // Update role in user_profiles using admin client
-          const { data: updatedProfile } = await state.supabase
-            .from("user_profiles")
-            .update({ email, role, enabled: true, updated_at: new Date().toISOString() })
-            .eq("id", newUserId)
-            .select("*")
-            .maybeSingle();
-          createdProfile = updatedProfile || { id: newUserId, email, role, enabled: true };
+        if (error) {
+          throw new Error(error.message || "Failed to create user in database");
         }
+        createdProfile = data;
+      } else {
+        // Local-only offline fallback
+        createdProfile = {
+          id: uid(),
+          email,
+          role,
+          enabled: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
       }
 
       if (createdProfile) {
+        if (!state.rows.user_profiles) state.rows.user_profiles = [];
+        const existingIdx = state.rows.user_profiles.findIndex(p => p.id === createdProfile.id);
+        if (existingIdx >= 0) {
+          state.rows.user_profiles[existingIdx] = createdProfile;
+        } else {
+          state.rows.user_profiles.push(createdProfile);
+        }
         await saveLocal("user_profiles", createdProfile, false);
-        toast(`Account created for ${email} with role "${role}".`);
+        toast(`Account created for ${email} (${role}).`);
         $("#new-user-email").value = "";
         $("#new-user-password").value = "";
         renderData();
       } else {
-        throw new Error("Could not create account. Please ensure the email has a valid domain (e.g. staff@company.com).");
+        throw new Error("Could not create account.");
       }
     } catch (error) {
       toast(`Could not create account: ${error.message || "Failed"}`);
     } finally {
       button.disabled = false;
-      button.textContent = "Create account";
+      button.textContent = "➕ Create account";
     }
   });
+
   document.querySelectorAll("[data-restore]").forEach(button => button.onclick = async () => {
     const [table, id] = button.dataset.restore.split(":");
     const row = rowById(table, id);
     if (row) await saveLocal(table, { ...row, deleted_at: null, updated_at: new Date().toISOString() });
   });
+
   document.querySelectorAll("[data-profile]").forEach(button => button.onclick = async () => {
     const profile = rowById("user_profiles", button.dataset.profile);
     if (profile?.id === state.user.id) return toast("You cannot disable your own account.");
     if (profile) await saveLocal("user_profiles", { ...profile, enabled: !profile.enabled, updated_at: new Date().toISOString() });
+  });
+
+  document.querySelectorAll("[data-delete-user]").forEach(button => {
+    button.onclick = async () => {
+      const userId = button.dataset.deleteUser;
+      const userEmail = button.dataset.userEmail || "this account";
+      if (userId === state.user?.id) return toast("You cannot delete your own active admin account.");
+      if (!window.confirm(`Permanently delete account "${userEmail}"?\nThis user will lose access immediately.`)) return;
+
+      button.disabled = true;
+      button.textContent = "Deleting…";
+
+      try {
+        if (state.supabase) {
+          const { error } = await state.supabase.rpc("admin_delete_user", { p_user_id: userId });
+          if (error && !error.message?.includes("User not found")) {
+            throw error;
+          }
+        }
+
+        // Clean up from local state and IndexedDB
+        state.rows.user_profiles = (state.rows.user_profiles || []).filter(p => p.id !== userId);
+        const db = await openDb();
+        const tx = db.transaction(["user_profiles"], "readwrite");
+        await tx.objectStore("user_profiles").delete(userId);
+        await tx.done;
+
+        toast(`Account "${userEmail}" deleted successfully.`);
+        renderData();
+      } catch (err) {
+        toast(`Could not delete account: ${err.message || err}`);
+        button.disabled = false;
+        button.textContent = "🗑️ Delete";
+      }
+    };
   });
 }
 
