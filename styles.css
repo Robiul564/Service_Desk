@@ -1050,14 +1050,63 @@ label input, label select, label textarea {
     linear-gradient(to top, rgba(74, 222, 128, 0.75) 3px, transparent 3px) 100% 100% / 26px 26px no-repeat;
 }
 
+.scanner-laser {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent 5%, #4ade80 30%, #86efac 50%, #4ade80 70%, transparent 95%);
+  box-shadow: 0 0 12px 2px rgba(74, 222, 128, 0.7);
+  pointer-events: none;
+  animation: scanLaser 2.2s ease-in-out infinite alternate;
+  z-index: 2;
+}
+
+@keyframes scanLaser {
+  0% { top: 10%; opacity: 0.3; }
+  20% { opacity: 0.95; }
+  80% { opacity: 0.95; }
+  100% { top: 90%; opacity: 0.3; }
+}
+
+.scan-success-flash {
+  position: absolute;
+  inset: 0;
+  background: rgba(74, 222, 128, 0.45);
+  pointer-events: none;
+  opacity: 0;
+  z-index: 10;
+  transition: opacity 0.15s ease-out;
+}
+
+.scan-success-flash.active {
+  opacity: 1;
+}
+
 .auto-mrz-highlight {
   position: absolute;
   border: 2.5px solid #4ade80;
-  background: rgba(74, 222, 128, 0.14);
+  background: rgba(74, 222, 128, 0.18);
   border-radius: 8px;
-  box-shadow: 0 0 16px rgba(74, 222, 128, 0.45);
+  box-shadow: 0 0 18px rgba(74, 222, 128, 0.55), inset 0 0 8px rgba(74, 222, 128, 0.2);
   pointer-events: none;
   transition: left 0.15s ease, top 0.15s ease, width 0.15s ease, height 0.15s ease;
+  z-index: 3;
+}
+
+.auto-mrz-highlight::before {
+  content: "PASSPORT MRZ";
+  position: absolute;
+  top: -20px;
+  left: 4px;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  color: #4ade80;
+  background: rgba(9, 14, 11, 0.88);
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(74, 222, 128, 0.4);
 }
 
 .consensus-pill {
@@ -1199,6 +1248,22 @@ label input, label select, label textarea {
 .scanner-actions button.primary {
   background: #15803d;
   border-color: #15803d;
+}
+
+#capture-now-button {
+  min-height: 52px;
+  font-size: 16px;
+  font-weight: 750;
+  letter-spacing: 0.3px;
+  background: linear-gradient(135deg, #15803d, #16a34a);
+  border: 1px solid #22c55e;
+  box-shadow: 0 4px 14px rgba(34, 197, 94, 0.35);
+  border-radius: 14px;
+}
+
+#capture-now-button:active {
+  transform: scale(0.97);
+  box-shadow: 0 2px 6px rgba(34, 197, 94, 0.4);
 }
 
 /* Toast Notifications */

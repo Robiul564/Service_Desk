@@ -304,3 +304,99 @@ alter table if exists public.workers add column if not exists passport_withdrawn
 alter table if exists public.workers add column if not exists passport_withdrawn_notes text;
 create index if not exists workers_submission_agency_idx on public.workers(submission_agency) where deleted_at is null;
 create index if not exists workers_submission_status_idx on public.workers(submission_status) where deleted_at is null;
+
+-- Admin User Management Functions (Bypasses email rate limits)
+create or replace function public.admin_create_user(
+  p_email text,
+  p_password text,
+  p_role text default 'staff'
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, auth, extensions
+as $$
+declare
+  v_user_id uuid;
+  v_encrypted_pw text;
+  v_profile jsonb;
+begin
+  if not public.is_admin() then
+    raise exception 'Only administrators can create new users.';
+  end if;
+
+  p_email := lower(trim(p_email));
+  if p_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then
+    raise exception 'Invalid email format.';
+  end if;
+
+  if length(p_password) < 8 then
+    raise exception 'Password must be at least 8 characters.';
+  end if;
+
+  if p_role not in ('admin', 'staff', 'viewer') then
+    raise exception 'Invalid role specified.';
+  end if;
+
+  if exists (select 1 from auth.users where email = p_email) then
+    raise exception 'An account with this email already exists.';
+  end if;
+
+  v_user_id := gen_random_uuid();
+  v_encrypted_pw := crypt(p_password, gen_salt('bf'));
+
+  insert into auth.users (
+    id, instance_id, email, encrypted_password,
+    email_confirmed_at, role, aud,
+    created_at, updated_at,
+    raw_app_meta_data, raw_user_meta_data,
+    is_super_admin, is_sso_user, is_anonymous,
+    confirmation_token, recovery_token,
+    email_change_token_new, email_change,
+    email_change_token_current, email_change_confirm_status
+  ) values (
+    v_user_id,
+    '00000000-0000-0000-0000-000000000000',
+    p_email,
+    v_encrypted_pw,
+    now(), 'authenticated', 'authenticated',
+    now(), now(),
+    '{"provider":"email","providers":["email"]}'::jsonb,
+    '{}'::jsonb,
+    false, false, false,
+    '', '', '', '', '', 0
+  );
+
+  insert into public.user_profiles (id, email, role, enabled)
+  values (v_user_id, p_email, p_role, true)
+  on conflict (id) do update set email = excluded.email, role = excluded.role, enabled = true;
+
+  select to_jsonb(p) into v_profile from public.user_profiles p where p.id = v_user_id;
+  return v_profile;
+end;
+$$;
+
+create or replace function public.admin_delete_user(p_user_id uuid)
+returns boolean
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+begin
+  if not public.is_admin() then
+    raise exception 'Only administrators can delete users.';
+  end if;
+
+  if p_user_id = auth.uid() then
+    raise exception 'You cannot delete your own active administrator account.';
+  end if;
+
+  delete from public.user_profiles where id = p_user_id;
+  delete from auth.users where id = p_user_id;
+  return true;
+end;
+$$;
+
+grant execute on function public.admin_create_user(text, text, text) to authenticated;
+grant execute on function public.admin_delete_user(uuid) to authenticated;
+

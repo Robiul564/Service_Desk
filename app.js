@@ -865,7 +865,7 @@ function openForm(table, row = null, opts = {}) {
     handovers: { paid_at: today(), method: "Cash", status: "Completed" },
     expenses: { paid_at: today(), method: "Cash" }
   };
-  const value = { ...(defaults[table] || {}), ...(row || {}) };
+  const value = { ...(defaults[table] || {}), ...(opts.defaults || {}), ...(row || {}) };
   $("#form-title").textContent = `${row ? "Edit" : "New"} ${table === "workers" ? "worker" : table.slice(0, -1)}`;
   $("#form-fields").innerHTML = FIELDS[table].map(field => fieldInput(table, field, value[field[0]])).join("");
   $("#form-fields").scrollTop = 0;
@@ -1954,56 +1954,92 @@ function renderData() {
     const email = $("#new-user-email").value.trim().toLowerCase();
     const password = $("#new-user-password").value;
     const role = $("#new-user-role").value;
-    if (!email || password.length < 8) return toast("Enter a valid email (e.g. staff@agency.com) and a password of at least 8 characters.");
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return toast("Enter a valid email address (e.g. staff@agency.com).");
+    if (password.length < 8) return toast("Password must be at least 8 characters.");
+    if (!state.supabase) return toast("Cloud database not connected. Connect Supabase first.");
+
     const button = $("#create-user");
     button.disabled = true;
     button.textContent = "Creating account…";
     try {
-      let createdProfile = null;
-      // 1. Try edge function first if deployed
-      try {
-        const { data, error } = await state.supabase.functions.invoke("admin-users", { body: { action: "create", email, password, role } });
-        if (!error && !data?.error && data?.profile) {
-          createdProfile = data.profile;
-        }
-      } catch (_) {}
+      // Direct Postgres RPC: Bypasses email rate limits and creates confirmed user + profile instantly
+      const { data, error } = await state.supabase.rpc("admin_create_user", {
+        p_email: email,
+        p_password: password,
+        p_role: role
+      });
+      if (error) throw error;
 
-      // 2. Direct client signup fallback using independent client instance to preserve current admin session
-      if (!createdProfile && window.supabase && config.supabaseUrl && config.supabaseAnonKey) {
-        const authClient = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey, {
-          auth: { persistSession: false, autoRefreshToken: false }
-        });
-        const { data: signUpData, error: signUpErr } = await authClient.auth.signUp({ email, password });
-        if (signUpErr) throw signUpErr;
-        const newUserId = signUpData?.user?.id;
-        if (newUserId) {
-          // Update role in user_profiles using admin client
-          const { data: updatedProfile } = await state.supabase
-            .from("user_profiles")
-            .update({ email, role, enabled: true, updated_at: new Date().toISOString() })
-            .eq("id", newUserId)
-            .select("*")
-            .maybeSingle();
-          createdProfile = updatedProfile || { id: newUserId, email, role, enabled: true };
-        }
-      }
+      const profile = Array.isArray(data) ? data[0] : data;
+      if (!profile?.id) throw new Error("Could not create user on cloud database.");
 
-      if (createdProfile) {
-        await saveLocal("user_profiles", createdProfile, false);
-        toast(`Account created for ${email} with role "${role}".`);
-        $("#new-user-email").value = "";
-        $("#new-user-password").value = "";
-        renderData();
-      } else {
-        throw new Error("Could not create account. Please ensure the email has a valid domain (e.g. staff@company.com).");
-      }
+      await saveLocal("user_profiles", {
+        id: profile.id,
+        email: profile.email || email,
+        role: profile.role || role,
+        enabled: true,
+        created_at: profile.created_at || new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }, false);
+
+      toast(`✓ Account created for ${email} (${role}).`);
+      $("#new-user-email").value = "";
+      $("#new-user-password").value = "";
+      renderData();
     } catch (error) {
-      toast(`Could not create account: ${error.message || "Failed"}`);
+      const msg = error?.message || String(error);
+      if (msg.includes("already exists") || msg.includes("duplicate key")) {
+        toast(`An account for ${email} already exists.`);
+      } else if (msg.includes("Only administrators")) {
+        toast("Permission denied: only admin accounts can create users.");
+      } else {
+        toast(`Could not create account: ${msg}`);
+      }
     } finally {
       button.disabled = false;
-      button.textContent = "Create account";
+      button.textContent = "➕ Create account";
     }
   });
+
+  document.querySelectorAll("[data-delete-user]").forEach(button => {
+    button.onclick = async () => {
+      const userId = button.dataset.deleteUser;
+      const userEmail = button.dataset.userEmail || "this user";
+      if (!userId) return;
+      if (userId === state.user?.id) return toast("You cannot delete your own active administrator account.");
+
+      if (!window.confirm(`Permanently delete account for "${userEmail}"?\nThis cannot be undone.`)) {
+        return;
+      }
+
+      button.disabled = true;
+      try {
+        if (state.supabase) {
+          const { error } = await state.supabase.rpc("admin_delete_user", { p_user_id: userId });
+          if (error) throw error;
+        }
+
+        // Delete from in-memory state
+        state.rows.user_profiles = state.rows.user_profiles.filter(p => p.id !== userId);
+
+        // Delete from local IndexedDB
+        if (state.db) {
+          try {
+            const tx = state.db.transaction("user_profiles", "readwrite");
+            tx.objectStore("user_profiles").delete(userId);
+            await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
+          } catch (_) {}
+        }
+
+        toast(`✓ User ${userEmail} permanently deleted.`);
+        renderData();
+      } catch (err) {
+        toast(`Could not delete user: ${err.message || "Failed"}`);
+        button.disabled = false;
+      }
+    };
+  });
+
   document.querySelectorAll("[data-restore]").forEach(button => button.onclick = async () => {
     const [table, id] = button.dataset.restore.split(":");
     const row = rowById(table, id);
@@ -2710,7 +2746,19 @@ function stopScanner() {
   if ($("#scanner-dialog").open) $("#scanner-dialog").close();
 }
 
+function triggerScanSuccessFeedback() {
+  try {
+    if (navigator.vibrate) navigator.vibrate([60, 40, 80]);
+  } catch (_) {}
+  const flash = $("#scan-success-flash");
+  if (flash) {
+    flash.classList.add("active");
+    setTimeout(() => flash.classList.remove("active"), 220);
+  }
+}
+
 function showScanReview(result, vizCanvasSnapshot = null) {
+  triggerScanSuccessFeedback();
   stopScanner();
   const scanToken = Date.now() + Math.random();
   const initialViz = vizCanvasSnapshot
