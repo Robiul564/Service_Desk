@@ -1,4 +1,4 @@
-const CACHE = "passport-desk-shell-v3";
+const CACHE = "passport-desk-shell-v4";
 const APP_FILES = ["./", "./index.html", "./styles.css", "./config.js", "./app.js", "./mrz.mjs", "./manifest.webmanifest", "./icon.svg"];
 const EXTERNAL = [
   "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js",
