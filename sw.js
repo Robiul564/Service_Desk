@@ -1,8 +1,12 @@
-const CACHE = "passport-desk-shell-v8";
-const APP_FILES = ["./", "./index.html", "./styles.css", "./config.js", "./app.js", "./mrz.mjs", "./mrz-vision.mjs", "./manifest.webmanifest", "./icon.svg"];
+const CACHE = "passport-desk-shell-v10";
+const APP_FILES = ["./", "./index.html", "./styles.css", "./config.js", "./app.js", "./mrz.mjs", "./manifest.webmanifest", "./icon.svg"];
+const OCR_ASSETS = [
+  "./model/mrz.traineddata.gz",
+  "./vendor/tesseract/tesseract.min.js",
+  "./vendor/tesseract/worker.min.js"
+];
 const EXTERNAL = [
-  "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js",
-  "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"
+  "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"
 ];
 
 self.addEventListener("install", event => {
@@ -29,6 +33,17 @@ self.addEventListener("fetch", event => {
   const url = new URL(request.url);
 
   if (url.origin === self.location.origin) {
+    // Cache-First for immutable heavy OCR runtime & traineddata assets (instant offline startup!)
+    if (url.pathname.includes("/vendor/tesseract/") || url.pathname.includes("/model/")) {
+      event.respondWith(
+        caches.match(request).then(cached => cached || fetch(request).then(response => {
+          if (response.ok) caches.open(CACHE).then(cache => cache.put(request, response.clone()));
+          return response;
+        }))
+      );
+      return;
+    }
+
     event.respondWith(
       fetch(request)
         .then(response => {
@@ -58,7 +73,7 @@ self.addEventListener("message", event => {
     self.skipWaiting();
   }
   if (event.data === "CACHE_OCR") {
-    event.waitUntil(caches.open(CACHE).then(cache => Promise.all(EXTERNAL.map(async url => {
+    event.waitUntil(caches.open(CACHE).then(cache => Promise.all([...OCR_ASSETS, ...EXTERNAL].map(async url => {
       try { await cache.add(url); } catch { /* Runtime downloads remain available when connected. */ }
     }))));
   }

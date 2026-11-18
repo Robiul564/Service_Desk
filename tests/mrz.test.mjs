@@ -1,10 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   checkDigit,
   parseTd3Name,
   validateTd3Pair,
   parseTd3Mrz,
+  extractTd3Mrz,
+  repairIcaoCountryCode,
   parseMrz,
   MrzFrameConsensus,
   crossVerifyNameWithViz,
@@ -17,15 +22,6 @@ import {
   parseTd3,
   tryParseMrz
 } from "../mrz.mjs";
-import {
-  analyzeFrameQuality,
-  locateMrzInGrayscale,
-  estimateSkewAngle,
-  rotateGrayscale,
-  denoise3x3Median,
-  adaptiveThresholdBradley,
-  detectMrzVerticalBounds
-} from "../mrz-vision.mjs";
 
 /**
  * Helper to construct a valid 44x2 TD3 passport MRZ for tests.
@@ -187,14 +183,85 @@ test("parseTd3Name: strips trailing OCR noise (KKKK, CCC, <<<K<<C<L<, <K<K<K<K) 
   assert.equal(pF.given_names, "MALIK LEE");
 });
 
-test("parseTd3Name: NEVER applies digit-to-letter correction in name (rejects digits)", () => {
-  // Digit "0" inside surname ("ERIKSS0N") MUST fail validation, not silently become "ERIKSSON"
-  const line1 = "P<UTOERIKSS0N<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<";
+test("parseTd3Name: ICAO OCR letter correction heals O/0, I/1, B/8, S/5, Z/2, G/6, A/4; rejects unresolvable digits", () => {
+  // Digit "0" inside surname ("ERIKSS0N") and "1" in given names ("MAR1A") should be repaired
+  const line1 = "P<UTOERIKSS0N<<ANNA<MAR1A<<<<<<<<<<<<<<<<<<<";
   const line2 = "L898902C36UTO7408122F1204159ZE184226B<<<<<10";
   const res = validateTd3Pair(line1, line2, { referenceDate: REF_DATE });
-  assert.equal(res.valid, false);
-  assert.equal(res.data, null);
-  assert.equal(res.checks.name, false);
+  assert.equal(res.valid, true);
+  assert.equal(res.data.surname, "ERIKSSON");
+  assert.equal(res.data.given_names, "ANNA MARIA");
+  assert.equal(res.data.name, "ANNA MARIA ERIKSSON");
+
+  // Separator misread as "<K" between surname and given names is cleanly recovered
+  const line1Sep = "P<BGDRAHMAN<KMOHAMMAD<AZIZUL<<<<<<<<<<<<<<<<";
+  const resSep = parseTd3Name(line1Sep);
+  assert.equal(resSep.valid, true);
+  assert.equal(resSep.surname, "RAHMAN");
+  assert.equal(resSep.given_names, "MOHAMMAD AZIZUL");
+
+  // Single-identifier / given-names only passport starting with "<<"
+  const line1Given = "P<BGD<<MOHAMMAD<AZIZUL<<<<<<<<<<<<<<<<<<<<<<";
+  const resGiven = parseTd3Name(line1Given);
+  assert.equal(resGiven.valid, true);
+  assert.equal(resGiven.surname, "");
+  assert.equal(resGiven.given_names, "MOHAMMAD AZIZUL");
+
+  // Unresolvable digits like 3, 7, 9 MUST fail validation
+  const bad3 = "P<UTOERIKSS3N<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<";
+  const badRes = validateTd3Pair(bad3, line2, { referenceDate: REF_DATE });
+  assert.equal(badRes.valid, false);
+});
+
+test("parseTd3Name: accurately separates multiple given names, multiple surnames, and handles OCR glyphs (8->B, 1->I, 0->O, 5->S)", () => {
+  // Case 1: Multiple given names: "JOHN MICHAEL PAUL"
+  const l1Multi = "P<GBRSMITH<<JOHN<MICHAEL<PAUL<<<<<<<<<<<<<<<";
+  const rMulti = parseTd3Name(l1Multi);
+  assert.equal(rMulti.valid, true);
+  assert.equal(rMulti.surname, "SMITH");
+  assert.equal(rMulti.given_names, "JOHN MICHAEL PAUL");
+  assert.equal(rMulti.full_name, "JOHN MICHAEL PAUL SMITH");
+
+  // Case 2: Multiple surnames (two family names): "GARCIA MARQUEZ"
+  const l1Surs = "P<COLGARCIA<MARQUEZ<<GABRIEL<<<<<<<<<<<<<<<<";
+  const rSurs = parseTd3Name(l1Surs);
+  assert.equal(rSurs.valid, true);
+  assert.equal(rSurs.surname, "GARCIA MARQUEZ");
+  assert.equal(rSurs.given_names, "GABRIEL");
+
+  // Case 3: Complex OCR glyph confusion (8->B, 1->I, 0->O, 5->S): "8APARY<<L1P0N<HA5AN" -> "BAPARY", "LIPON HASAN"
+  const l1Ocr = "P<BGD8APARY<<L1P0N<HA5AN<<<<<<<<<<<<<<<<<<<<";
+  const rOcr = parseTd3Name(l1Ocr);
+  assert.equal(rOcr.valid, true);
+  assert.equal(rOcr.surname, "BAPARY");
+  assert.equal(rOcr.given_names, "LIPON HASAN");
+  assert.equal(rOcr.full_name, "LIPON HASAN BAPARY");
+
+  // Case 4: Complete TD3 field extraction check (all Section 2 fields)
+  const l2 = "A012345678BGD9408126M3104150ZE184226B<<<<<10";
+  const res = validateTd3Pair(l1Ocr, l2, { referenceDate: REF_DATE });
+  assert.equal(res.valid, true);
+  assert.equal(res.data.surname, "BAPARY");
+  assert.equal(res.data.given_names, "LIPON HASAN");
+  assert.equal(res.data.name, "LIPON HASAN BAPARY");
+  assert.equal(res.data.passport_no, "A01234567");
+  assert.equal(res.data.dob, "1994-08-12");
+  assert.equal(res.data.birth_date, "1994-08-12");
+  assert.equal(res.data.sex, "M");
+  assert.equal(res.data.gender, "Male");
+  assert.equal(res.data.nationality, "Bangladeshi");
+  assert.equal(res.data.nationality_code, "BGD");
+  assert.equal(res.data.issuing_country, "BGD");
+  assert.equal(res.data.issuing_state, "BGD");
+  assert.equal(res.data.passport_expiry, "2031-04-15");
+  assert.equal(res.data.expiry_date, "2031-04-15");
+  assert.equal(res.data.personal_number, "ZE184226B");
+  assert.equal(res.data.optional_data, "ZE184226B");
+  assert.equal(res.data.checks.passport, true);
+  assert.equal(res.data.checks.dob, true);
+  assert.equal(res.data.checks.expiry, true);
+  assert.equal(res.data.checks.personal, true);
+  assert.equal(res.data.checks.composite, true);
 });
 
 // ============================================================================
@@ -349,105 +416,6 @@ test("crossVerifyNameWithViz: verifies exact, diacritic/transliterated, truncate
 });
 
 // ============================================================================
-// 6. COMPUTER VISION QUALITY & PREPROCESSING TESTS (BLUR, LOW-LIGHT, GLARE, TILT)
-// ============================================================================
-
-function createSyntheticMrzImage(width, height, { bg = 225, fg = 25, angleDeg = 0, blurPasses = 0, glare = false } = {}) {
-  const img = new Uint8Array(width * height);
-  img.fill(bg);
-
-  // Draw two horizontal rows of crisp character blocks simulating 2x44 MRZ lines
-  const row1Y0 = Math.round(height * 0.28);
-  const row1Y1 = Math.round(height * 0.44);
-  const row2Y0 = Math.round(height * 0.58);
-  const row2Y1 = Math.round(height * 0.74);
-
-  for (let y = 0; y < height; y += 1) {
-    const inBand = (y >= row1Y0 && y <= row1Y1) || (y >= row2Y0 && y <= row2Y1);
-    if (!inBand) continue;
-    for (let x = 16; x < width - 16; x += 1) {
-      // Simulate 44 OCR-B character strokes separated by gaps
-      if ((x % 10) < 6) {
-        img[y * width + x] = fg;
-      }
-    }
-  }
-
-  let out = angleDeg !== 0 ? rotateGrayscale(img, width, height, angleDeg) : img;
-
-  // Apply box blur passes to simulate defocus / motion blur
-  for (let p = 0; p < blurPasses; p += 1) {
-    const blurred = new Uint8Array(width * height);
-    blurred.set(out);
-    for (let y = 1; y < height - 1; y += 1) {
-      for (let x = 1; x < width - 1; x += 1) {
-        let s = 0;
-        for (let dy = -1; dy <= 1; dy += 1) {
-          for (let dx = -1; dx <= 1; dx += 1) {
-            s += out[(y + dy) * width + (x + dx)];
-          }
-        }
-        blurred[y * width + x] = (s / 9) | 0;
-      }
-    }
-    out = blurred;
-  }
-
-  if (glare) {
-    // Flood > 55% of image with blown-out specular white glare (254)
-    for (let i = 0; i < Math.floor(out.length * 0.65); i += 1) out[i] = 254;
-  }
-
-  return out;
-}
-
-test("CV quality analyzer: detects low-light, glare, blur, and passes crisp MRZ frames", () => {
-  const W = 480;
-  const H = 120;
-
-  // Crisp well-lit MRZ frame
-  const crisp = createSyntheticMrzImage(W, H, { bg: 220, fg: 20 });
-  const qCrisp = analyzeFrameQuality(crisp, W, H);
-  assert.equal(qCrisp.ok, true, `Expected crisp frame to pass, got: ${qCrisp.issue}`);
-
-  // Low-light frame (dark background & foreground)
-  const dark = createSyntheticMrzImage(W, H, { bg: 30, fg: 5 });
-  const qDark = analyzeFrameQuality(dark, W, H);
-  assert.equal(qDark.ok, false);
-  assert.equal(qDark.issue, "low_light");
-
-  // Glare frame (blown-out reflection)
-  const glareImg = createSyntheticMrzImage(W, H, { bg: 235, fg: 120, glare: true });
-  const qGlare = analyzeFrameQuality(glareImg, W, H);
-  assert.equal(qGlare.ok, false);
-  assert.equal(qGlare.issue, "glare");
-
-  // Blurry frame (heavily defocused)
-  const blurry = createSyntheticMrzImage(W, H, { bg: 190, fg: 140, blurPasses: 12 });
-  const qBlurry = analyzeFrameQuality(blurry, W, H);
-  assert.equal(qBlurry.ok, false);
-  assert.ok(["blur", "low_contrast"].includes(qBlurry.issue));
-});
-
-test("CV deskew + denoise + adaptive threshold: detects 3° tilt and extracts crisp MRZ band", () => {
-  const W = 480;
-  const H = 120;
-  const tilted = createSyntheticMrzImage(W, H, { bg: 225, fg: 25, angleDeg: 3.0 });
-
-  const estimated = estimateSkewAngle(tilted, W, H, { maxAngle: 5, stepDeg: 0.5 });
-  // Deskew angle should oppose the +3° synthetic tilt (within ±1°)
-  assert.ok(Math.abs(estimated + 3.0) <= 1.0 || Math.abs(estimated - 3.0) <= 1.0, `Unexpected skew estimate: ${estimated}`);
-
-  const deskewed = rotateGrayscale(tilted, W, H, estimated);
-  const denoised = denoise3x3Median(deskewed, W, H);
-  const binary = adaptiveThresholdBradley(denoised, W, H, { tPercent: 12 });
-  const bounds = detectMrzVerticalBounds(binary, W, H);
-
-  assert.ok(bounds.top >= 0 && bounds.bottom < H);
-  assert.ok(bounds.bottom - bounds.top >= 40, "Detected MRZ height should cover both bands");
-});
-
-// ============================================================================
 // 7. CORPUS PER-FIELD ACCURACY REPORT
 // ============================================================================
 
@@ -502,36 +470,6 @@ test("Per-field accuracy benchmark across diverse TD3 passport corpus (100% accu
   }
 });
 
-test("CV auto-locator: finds 2-line MRZ block anywhere in frame (top, middle, or bottom) without box alignment", () => {
-  const W = 320;
-  const H = 240;
-
-  for (const [label, yStartFrac] of [["top", 0.12], ["middle", 0.42], ["bottom", 0.72]]) {
-    const frame = new Uint8Array(W * H);
-    frame.fill(215);
-
-    const r1y0 = Math.round(H * yStartFrac);
-    const r1y1 = r1y0 + 12;
-    const r2y0 = r1y1 + 8;
-    const r2y1 = r2y0 + 12;
-
-    for (let y = 0; y < H; y += 1) {
-      const inMrz = (y >= r1y0 && y <= r1y1) || (y >= r2y0 && y <= r2y1);
-      if (!inMrz) continue;
-      for (let x = 24; x < W - 24; x += 1) {
-        if (x % 6 < 3) frame[y * W + x] = 20;
-      }
-    }
-
-    const box = locateMrzInGrayscale(frame, W, H);
-    const detTop = box.y * H;
-    const detBot = (box.y + box.h) * H;
-    assert.ok(detTop <= r1y0 + 4, `[${label}] detected top ${detTop} should cover row1 top ${r1y0}`);
-    assert.ok(detBot >= r2y1 - 4, `[${label}] detected bottom ${detBot} should cover row2 bottom ${r2y1}`);
-    assert.ok(box.confidence > 0.05, `[${label}] confidence should be positive`);
-  }
-});
-
 test("Universal multi-format MRZ engine (Python try_parse equivalent): fit, sliding window & multi-format support", () => {
   // 1. fit: pads or trims ±1-2 characters
   assert.equal(fit("P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<", 44), "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<");
@@ -580,4 +518,77 @@ test("Universal multi-format MRZ engine (Python try_parse equivalent): fit, slid
   assert.equal(resTd2.given_names, "ANNA MARIA");
   assert.equal(resTd2.document_number, "D23145890");
   assert.equal(resTd2.all_checks_passed, true);
+});
+
+// ============================================================================
+// 8. ROBUST REAL-WORLD OCR RECOVERY, MORPHOLOGICAL OBB & OFFLINE ASSET TESTS
+// ============================================================================
+
+test("extractTd3Mrz: recovers from flanking desk-edge noise, extra/missing chars & country OCR confusion", () => {
+  // 1. Flanking border garbage on both lines (exact failure mode from real desk photos)
+  const flanked = [
+    "CG P<BGDRAHMAN<<MD<ABU<TAHER<<<<<<<<<<<<<<<<<<< L0",
+    "<5 A094792953BGD9205107M3205105<<<<<<<<<<<<<<<4 8B"
+  ].join("\n");
+  const r1 = extractTd3Mrz(flanked, { referenceDate: REF_DATE });
+  assert.equal(r1.valid, true, r1.errors.join("; "));
+  assert.equal(r1.data.surname, "RAHMAN");
+  assert.equal(r1.data.given_names, "MD ABU TAHER");
+  assert.equal(r1.data.passport_no, "A09479295");
+  assert.equal(r1.data.dob, "1992-05-10");
+  assert.equal(r1.data.passport_expiry, "2032-05-10");
+
+  // 2. Single extra OCR-inserted character in middle of Line 2 (45 chars: "ZE184226GB" -> "ZE184226B")
+  const inserted = [
+    "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<",
+    "L898902C3GUTO7408122F1204159ZE184226GB<<<<<10"
+  ].join("\n");
+  const r2 = extractTd3Mrz(inserted, { referenceDate: REF_DATE });
+  assert.equal(r2.valid, true, r2.errors.join("; "));
+  assert.equal(r2.data.passport_no, "L898902C3");
+  assert.equal(r2.data.personal_number, "ZE184226B");
+
+  // 3. Dropped trailing '<' on Line 1 + country code OCR confusion ("0<<" -> "D<<", "0<D<<" -> "P<D<<")
+  const shortAndConfused = [
+    "0<D<<MUELLER<<HANS<JUERGEN<<<<<",
+    "C01X00T4780<<6408125M2702283<<<<<<<<<<<<<<<4"
+  ].join("\n");
+  const r3 = extractTd3Mrz(shortAndConfused, { referenceDate: REF_DATE });
+  assert.equal(r3.valid, true, r3.errors.join("; "));
+  assert.equal(r3.data.issuing_state, "D");
+  assert.equal(r3.data.surname, "MUELLER");
+  assert.equal(r3.data.given_names, "HANS JUERGEN");
+  assert.equal(r3.data.passport_no, "C01X00T47");
+
+  // 4. Country code alpha-only repair helper
+  assert.equal(repairIcaoCountryCode("B6D"), "BGD");
+  assert.equal(repairIcaoCountryCode("6GD"), "BGD");
+  assert.equal(repairIcaoCountryCode("0<<"), "D<<");
+  assert.equal(repairIcaoCountryCode("UT0"), "UTO");
+  assert.equal(repairIcaoCountryCode("999"), null);
+
+  // 5. Still strictly rejects corrupted composite check digit & digits inside name
+  const badCheck = [
+    "CG P<BGDRAHMAN<<MD<ABU<TAHER<<<<<<<<<<<<<<<<<<< L0",
+    "<5 A094792953BGD9205107M3205105<<<<<<<<<<<<<<<9 8B"
+  ].join("\n");
+  assert.equal(extractTd3Mrz(badCheck, { referenceDate: REF_DATE }).valid, false);
+});
+
+test("Offline OCR-B model and self-hosted Tesseract WASM assets are present for Android PWA", () => {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const requiredAssets = [
+    "model/mrz.traineddata.gz",
+    "vendor/tesseract/tesseract.min.js",
+    "vendor/tesseract/worker.min.js",
+    "vendor/tesseract/tesseract-core-lstm.wasm.js",
+    "vendor/tesseract/tesseract-core-simd-lstm.wasm.js",
+    "vendor/tesseract/tesseract-core-relaxedsimd-lstm.wasm.js",
+    "vendor/tesseract/LICENSE.md"
+  ];
+  for (const rel of requiredAssets) {
+    const full = path.join(root, rel);
+    assert.ok(fs.existsSync(full), `Missing required offline OCR asset: ${rel}`);
+    assert.ok(fs.statSync(full).size > 1000, `Asset looks unexpectedly empty: ${rel}`);
+  }
 });

@@ -1,8 +1,5 @@
 /**
- * ICAO Doc 9303 Part 4 — TD3 Passport MRZ Parser, Validator, Consensus & VIZ Cross-Verifier
- *
- * SCOPE: TD3 PASSPORTS ONLY (exactly 2 lines x 44 characters).
- * TD1 / TD2 and any non-44-char or check-digit-failing scans are strictly rejected.
+ * ICAO Doc 9303 Part 4 — TD3 Passport MRZ Parser, Validator & Robust Line Recovery
  *
  * TD3 Layout (1-indexed positions):
  * Line 1 (44 chars):
@@ -22,11 +19,7 @@
 
 const WEIGHTS = [7, 3, 1];
 
-/**
- * Complete ISO 3166-1 alpha-3 country codes + official ICAO Doc 9303 Part 3 special codes.
- */
 export const VALID_ICAO_COUNTRY_CODES = new Set([
-  // ISO 3166-1 alpha-3 (249 official codes)
   "ABW", "AFG", "AGO", "AIA", "ALA", "ALB", "AND", "ARE", "ARG", "ARM", "ASM", "ATA", "ATF", "ATG", "AUS", "AUT", "AZE",
   "BDI", "BEL", "BEN", "BES", "BFA", "BGD", "BGR", "BHR", "BHS", "BIH", "BLM", "BLR", "BLZ", "BMU", "BOL", "BRA", "BRB", "BRN", "BTN", "BVT", "BWA",
   "CAF", "CAN", "CCK", "CHE", "CHL", "CHN", "CIV", "CMR", "COD", "COG", "COK", "COL", "COM", "CPV", "CRI", "CUB", "CUW", "CXR", "CYM", "CYP", "CZE",
@@ -52,34 +45,10 @@ export const VALID_ICAO_COUNTRY_CODES = new Set([
   "WLF", "WSM",
   "YEM",
   "ZAF", "ZMB", "ZWE",
-  // Official ICAO Doc 9303 Part 3 special & organizational codes
-  "D<<", // Germany (ICAO special 1-letter code padded with <<)
-  "GBD", // British Overseas Territories Citizen
-  "GBN", // British National (Overseas)
-  "GBO", // British Overseas Citizen
-  "GBP", // British Protected Person
-  "GBS", // British Subject
-  "UNO", // United Nations Organization
-  "UNA", // United Nations Specialized Agency
-  "UNK", // UNMIK Kosovo
-  "RKS", // Republic of Kosovo
-  "EUE", // European Union
-  "XBA", // African Development Bank
-  "XIM", // African Export-Import Bank
-  "XCC", // Caribbean Community (CARICOM)
-  "XCE", // Council of Europe
-  "XCO", // Common Market for Eastern and Southern Africa (COMESA)
-  "XEC", // Economic Community of West African States (ECOWAS)
-  "XPO", // International Criminal Police Organization (INTERPOL)
-  "XOM", // Sovereign Military Order of Malta
-  "XXA", // Stateless person (1954 Convention)
-  "XXB", // Refugee (1951 Convention)
-  "XXC", // Refugee (other)
-  "XXX", // Unspecified nationality
-  "UTO"  // Utopia (ICAO Doc 9303 official specimen state)
+  "D<<", "GBD", "GBN", "GBO", "GBP", "GBS", "UNO", "UNA", "UNK", "RKS", "EUE", "XBA", "XIM", "XCC", "XCE", "XCO", "XEC", "XPO", "XOM", "XXA", "XXB", "XXC", "XXX", "UTO"
 ]);
 
-const NATIONALITY_LABELS = {
+export const NATIONALITY_LABELS = {
   BGD: "Bangladeshi",
   MYS: "Malaysian",
   IND: "Indian",
@@ -103,15 +72,12 @@ const NATIONALITY_LABELS = {
   BHR: "Bahraini"
 };
 
-/**
- * Compute ICAO Doc 9303 check digit (weights 7-3-1, A=10..Z=35, "<"=0).
- * @param {string} value
- * @returns {number} 0..9
- */
 export function checkDigit(value) {
+  if (value === null || value === undefined) return -1;
+  const str = String(value);
   let total = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    const c = value[i];
+  for (let i = 0; i < str.length; i += 1) {
+    const c = str[i];
     let num = 0;
     if (c === "<") {
       num = 0;
@@ -120,47 +86,70 @@ export function checkDigit(value) {
     } else if (c >= "A" && c <= "Z") {
       num = c.charCodeAt(0) - 55;
     } else {
-      return -1; // Invalid MRZ character
+      return -1;
     }
     total += num * WEIGHTS[i % 3];
   }
   return total % 10;
 }
 
-/**
- * OCR numeric-field confusion correction ONLY (O->0, I->1, B->8, S->5, Z->2, G->6).
- * NEVER call this on the name field, issuing state, or nationality.
- */
-function toNumericField(value) {
+export function toNumericField(value) {
   return String(value || "")
-    .replace(/O/g, "0")
-    .replace(/I/g, "1")
+    .replace(/[OQD]/g, "0")
+    .replace(/[IL]/g, "1")
     .replace(/B/g, "8")
     .replace(/S/g, "5")
     .replace(/Z/g, "2")
     .replace(/G/g, "6");
 }
 
-/**
- * Check if a 3-char ICAO country code is valid (ISO 3166-1 alpha-3 or ICAO special code).
- */
-export function isValidIcaoCountryCode(code) {
-  if (typeof code !== "string" || code.length !== 3) return false;
-  if (VALID_ICAO_COUNTRY_CODES.has(code)) return true;
-  // Normalize single-letter Germany code if passed as "D" vs "D<<"
-  return false;
+export function toAlphaField(value) {
+  return String(value || "")
+    .replace(/0/g, "O")
+    .replace(/1/g, "I")
+    .replace(/2/g, "Z")
+    .replace(/4/g, "A")
+    .replace(/5/g, "S")
+    .replace(/6/g, "G")
+    .replace(/8/g, "B");
 }
 
-/**
- * Parse and validate a real YYMMDD calendar date with proper century resolution.
- * - DOB: must NOT be in the future (compared against referenceDate, defaults to today UTC).
- * - Expiry: resolved relative to referenceDate (-30 to +50 year window) and checked against DOB if provided.
- */
+export function repairNameOcrConfusions(rawName39) {
+  if (typeof rawName39 !== "string") return "";
+  return toAlphaField(rawName39);
+}
+
+export function repairIcaoCountryCode(raw3) {
+  if (typeof raw3 !== "string" || raw3.length !== 3) return null;
+  if (VALID_ICAO_COUNTRY_CODES.has(raw3)) return raw3;
+
+  const fixed = toAlphaField(raw3);
+  if (VALID_ICAO_COUNTRY_CODES.has(fixed)) return fixed;
+
+  if (raw3.includes("6")) {
+    const altB = fixed.replace(/G/g, "B");
+    if (VALID_ICAO_COUNTRY_CODES.has(altB)) return altB;
+    const altFirstB = raw3.replace(/^6/, "B").replace(/0/g, "O").replace(/1/g, "I").replace(/8/g, "B");
+    if (VALID_ICAO_COUNTRY_CODES.has(altFirstB)) return altFirstB;
+  }
+  if (raw3.includes("0")) {
+    const altD = raw3.replace(/0/g, "D").replace(/1/g, "I").replace(/6/g, "G").replace(/8/g, "B");
+    if (VALID_ICAO_COUNTRY_CODES.has(altD)) return altD;
+  }
+  return null;
+}
+
+export function isValidIcaoCountryCode(code) {
+  if (typeof code !== "string" || code.length !== 3) return false;
+  return VALID_ICAO_COUNTRY_CODES.has(code);
+}
+
 export function parseMrzDate(yymmdd, { isDob = false, referenceDate = new Date(), dobIso = null } = {}) {
-  if (!/^\d{6}$/.test(yymmdd)) return null;
-  const yy = Number(yymmdd.slice(0, 2));
-  const month = Number(yymmdd.slice(2, 4));
-  const day = Number(yymmdd.slice(4, 6));
+  const clean = toNumericField(yymmdd);
+  if (!/^\d{6}$/.test(clean)) return null;
+  const yy = Number(clean.slice(0, 2));
+  const month = Number(clean.slice(2, 4));
+  const day = Number(clean.slice(4, 6));
   if (month < 1 || month > 12 || day < 1 || day > 31) return null;
 
   const refYear = referenceDate.getUTCFullYear();
@@ -170,66 +159,35 @@ export function parseMrzDate(yymmdd, { isDob = false, referenceDate = new Date()
 
   let year = centuryBase + yy;
   if (isDob) {
-    // DOB must never be in the future relative to today
     const isFuture =
       year > refYear ||
       (year === refYear && month > refMonth) ||
       (year === refYear && month === refMonth && day > refDay);
     if (isFuture) year -= 100;
-    // Sanity bound: human DOB cannot be > 125 years ago
     if (refYear - year > 125) return null;
   } else {
-    // Passport expiry: typically within -30 to +50 years of today
     if (year > refYear + 50) year -= 100;
     else if (year < refYear - 30) year += 100;
   }
 
-  // Verify real calendar date (catches Feb 29 on non-leap years, Apr 31, etc.)
   const dt = new Date(Date.UTC(year, month - 1, day));
-  if (
-    dt.getUTCFullYear() !== year ||
-    dt.getUTCMonth() !== month - 1 ||
-    dt.getUTCDate() !== day
-  ) {
+  if (dt.getUTCFullYear() !== year || dt.getUTCMonth() !== month - 1 || dt.getUTCDate() !== day) {
     return null;
   }
 
   const iso = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-  if (!isDob && dobIso && iso <= dobIso) {
-    return null; // Expiry date cannot precede or equal date of birth
-  }
+  if (!isDob && dobIso && iso <= dobIso) return null;
   return iso;
 }
 
-/**
- * Clean OCR filler-character misreads (< read as K, C, L, S, E, I) strictly in
- * the trailing filler zone of the 39-character TD3 name field (pos 6-44).
- *
- * Rules grounded in ICAO Doc 9303 Part 4:
- * 1. NEVER apply digit-to-letter or letter-to-digit correction. Digits invalidate the name.
- * 2. Filler runs after the name are ALWAYS "<", never letters.
- * 3. In ICAO TD3:
- *    - Surname starts at index 0.
- *    - Surname and Given Names are separated by EXACTLY TWO "<" ("<<").
- *    - Three or more consecutive "<" ("<<<") can ONLY occur in the trailing filler zone.
- *    - Any second "<<" (after the first "<<" separator) can ONLY occur in the trailing filler zone.
- *    - No real name ends with a trailing run of 3+ identical filler-confusable letters
- *      (KKK, CCC, LLL, SSS, EEE, III) touching the end of the 39-char field or right before filler.
- *    - Trailing alternating noise patterns reaching char 39 (e.g. "<K<K<K<K<", "<KK<C<L<") are filler.
- *    - Single-letter middle initials (e.g. "SMITH<<JOHN<K<<<<<<<<<<<<") are preserved!
- */
 export function cleanTd3NameFillerNoise(raw39) {
-  let s = raw39;
+  let s = repairNameOcrConfusions(raw39);
 
-  // Step 1: Any run of 3+ consecutive "<" marks the start of the trailing filler zone.
-  // Everything from that "<<<" to index 39 MUST be "<" (fixes "<<<K<<KK<C<L<E<I<").
   const tripleIdx = s.indexOf("<<<");
   if (tripleIdx !== -1) {
     s = s.slice(0, tripleIdx) + "<".repeat(39 - tripleIdx);
   }
 
-  // Step 2: If there is a first "<<" separator and a SECOND "<<" later in the field,
-  // everything from the second "<<" to index 39 MUST be "<" (fixes "<<ANNA<MARIA<<K<C<K<").
   const firstSep = s.indexOf("<<");
   if (firstSep !== -1) {
     const secondSep = s.indexOf("<<", firstSep + 2);
@@ -238,8 +196,6 @@ export function cleanTd3NameFillerNoise(raw39) {
     }
   }
 
-  // Step 3: Clean trailing OCR filler noise touching the end of the 39-char line (index 38).
-  // Loop until stable because stripping trailing "<" or "KKKK" can expose an adjacent noise segment.
   let prev;
   do {
     prev = s;
@@ -247,26 +203,16 @@ export function cleanTd3NameFillerNoise(raw39) {
     const head = s.slice(0, trimmedLen);
     const trailingFillers = 39 - trimmedLen;
 
-    // 3a. Run of 3+ identical filler-confusable chars at the very end of the non-filler text
-    //     e.g. "ANNA<MARIAKKKKKKKKKKKKKKKKKKK" or "ANNA<MARIAKKKK<<<<<<"
     const identicalRunMatch = head.match(/([KCLSEI])\1{2,}$/);
     if (identicalRunMatch) {
-      // Only strip if it's touching end-of-line OR preceded by "<" OR adjacent to trailing "<"
       const runLen = identicalRunMatch[0].length;
       const runStart = head.length - runLen;
-      const precedesFillerOrEol = trailingFillers > 0 || runStart + runLen === 39;
-      if (precedesFillerOrEol) {
+      if (trailingFillers > 0 || runStart + runLen === 39) {
         s = head.slice(0, runStart) + "<".repeat(39 - runStart);
         continue;
       }
     }
 
-    // 3b. Trailing mixed filler-noise tail of length >= 4 consisting exclusively of "<" and
-    //     {K, C, L, S, E, I} that contains at least two "<" separators (e.g. "<K<K<K<K<",
-    //     "<K<C<L<K", "<KK<K<") when touching the end of the 39-char line (trailingFillers <= 1)
-    //     or when every token is confusable and >= 3 tokens long.
-    //     NOTE: A legitimate middle initial like "JOHN<K" (1 token) or "JOHN<K<L" followed by "<<"
-    //     is NOT matched because of the >= 3 alternating tokens requirement at EOL.
     const alternatingMatch = head.match(/(?:<+[KCLSEI]{1,2}){3,}$/);
     if (alternatingMatch) {
       const matchStart = head.length - alternatingMatch[0].length;
@@ -274,8 +220,6 @@ export function cleanTd3NameFillerNoise(raw39) {
       continue;
     }
 
-    // 3c. Trailing double-K ("<KK") immediately adjacent to trailing filler "<<" (e.g. "MARIA<KK<<<<")
-    //     No valid given name is "KK".
     if (trailingFillers >= 1) {
       const doubleKMatch = head.match(/<K{2,}$/);
       if (doubleKMatch) {
@@ -285,7 +229,6 @@ export function cleanTd3NameFillerNoise(raw39) {
       }
     }
 
-    // 3d. Re-check second "<<" if newly exposed
     const fSep = s.indexOf("<<");
     if (fSep !== -1) {
       const sSep = s.indexOf("<<", fSep + 2);
@@ -298,96 +241,74 @@ export function cleanTd3NameFillerNoise(raw39) {
   return s;
 }
 
-/**
- * Parse the TD3 name field (Line 1, characters 6-44, 39 chars total).
- *
- * - NEVER converts digits to letters or letters to digits.
- * - Rejects any digit 0-9 found in the name field.
- * - Cleans OCR filler noise (< read as K/C/L/S/E/I) in the trailing filler zone.
- * - Splits on the FIRST "<<": left = surname, right = given names.
- * - Converts single "<" inside surname/given names into single spaces.
- * - Detects 39-character truncation.
- * - Returns surname and given_names as separate fields.
- *
- * @param {string} line1 - Full 44-char TD3 Line 1
- */
 export function parseTd3Name(line1) {
   if (typeof line1 !== "string" || line1.length !== 44) {
     return { valid: false, error: "TD3 Line 1 must be exactly 44 characters." };
   }
 
-  // Extract strictly positions 6-44 (0-indexed 5..44 => 39 characters)
   const rawNameField = line1.slice(5, 44);
+  const repaired39 = repairNameOcrConfusions(rawNameField);
 
-  // Strict rule: NEVER apply digit-to-letter correction in name. Any digit is an OCR error.
-  if (/[0-9]/.test(rawNameField)) {
-    return {
-      valid: false,
-      error: "MRZ name field contains invalid digit(s). Rescan required."
-    };
+  if (/[0-9]/.test(repaired39)) {
+    return { valid: false, error: "MRZ name field contains invalid digit(s). Rescan required." };
   }
-  if (!/^[A-Z<]{39}$/.test(rawNameField)) {
-    return {
-      valid: false,
-      error: "MRZ name field contains invalid characters."
-    };
+  if (!/^[A-Z<]{39}$/.test(repaired39)) {
+    return { valid: false, error: "MRZ name field contains invalid characters." };
   }
 
-  // Clean trailing OCR filler noise (< misread as K/C/L/S/E/I)
-  const cleaned39 = cleanTd3NameFillerNoise(rawNameField);
-
-  // Detect if name hit the 39-char ICAO truncation boundary (no trailing filler left)
+  const cleaned39 = cleanTd3NameFillerNoise(repaired39);
   const truncated = !cleaned39.endsWith("<");
+  let content = cleaned39.replace(/<+$/, "");
 
-  // Split on the FIRST "<<"
-  const sepIndex = cleaned39.indexOf("<<");
+  if (!content.includes("<<")) {
+    if (/^(?:<K|K<|KK)/.test(content)) {
+      content = content.replace(/^(?:<K|K<|KK)/, "<<");
+    } else {
+      content = content.replace(/([A-Z])(?:<K|K<|KK)([A-Z])/g, (m, p1, p2) => `${p1}<<${p2}`);
+    }
+  }
+
+  const sepIndex = content.indexOf("<<");
   let surnameRaw = "";
   let givenRaw = "";
 
   if (sepIndex === -1) {
-    // No "<<" separator found at all — only valid if name is a 39-char truncated single surname
-    // or all characters are letters/single "<". Flag as truncated/single-identifier.
-    surnameRaw = cleaned39.replace(/<+$/, "");
+    surnameRaw = content;
     givenRaw = "";
+  } else if (sepIndex === 0) {
+    surnameRaw = "";
+    givenRaw = content.slice(2);
   } else {
-    surnameRaw = cleaned39.slice(0, sepIndex);
-    const afterSep = cleaned39.slice(sepIndex + 2);
-    // If afterSep begins with "<" (meaning "<<<"), there are NO given names (single-name passport)
+    surnameRaw = content.slice(0, sepIndex);
+    const afterSep = content.slice(sepIndex + 2);
     if (afterSep.startsWith("<")) {
       givenRaw = "";
     } else {
-      // Trim trailing "<" fillers
-      givenRaw = afterSep.replace(/<+$/, "");
+      givenRaw = afterSep;
     }
   }
 
-  // Inside each part, single "<" represents a space (or transliterated hyphen/apostrophe)
   const surname = surnameRaw.replace(/</g, " ").replace(/\s+/g, " ").trim();
   const given_names = givenRaw.replace(/</g, " ").replace(/\s+/g, " ").trim();
 
-  if (!surname) {
-    return {
-      valid: false,
-      error: "Surname could not be extracted from MRZ Line 1."
-    };
+  if (!surname && !given_names) {
+    return { valid: false, error: "Neither surname nor given names could be extracted from MRZ Line 1." };
   }
 
-  const full_name = given_names ? `${given_names} ${surname}` : surname;
+  const full_name = (given_names && surname) ? `${given_names} ${surname}`.trim() : (surname || given_names);
 
   return {
     valid: true,
     surname,
     given_names,
     full_name,
+    name: full_name,
     truncated,
     cleaned_raw: cleaned39,
     error: null
   };
 }
 
-/**
- * Attempt targeted OCR numeric correction on a single check-digit character.
- */
 function parseCheckDigitChar(ch, allowFillerZero = false) {
   if (allowFillerZero && ch === "<") return 0;
   const fixed = toNumericField(ch);
@@ -395,17 +316,11 @@ function parseCheckDigitChar(ch, allowFillerZero = false) {
   return Number(fixed);
 }
 
-/**
- * Attempt safe OCR numeric correction on an alphanumeric field (passport number or personal number)
- * ONLY when the raw field fails its check digit. Re-verifies the check digit after every candidate.
- */
 function repairNumericPositionsWithCheck(rawField, expectedDigit) {
-  // 1. Raw field already passes? Return immediately with zero mutations!
   if (checkDigit(rawField) === expectedDigit) {
     return { value: rawField, repaired: false, valid: true };
   }
 
-  // 2. Try converting digits in the numeric suffix (e.g. passport number after 1-2 alpha prefix chars)
   for (const prefixLen of [2, 1, 0]) {
     const candidate = rawField.slice(0, prefixLen) + toNumericField(rawField.slice(prefixLen));
     if (candidate !== rawField && checkDigit(candidate) === expectedDigit) {
@@ -413,24 +328,27 @@ function repairNumericPositionsWithCheck(rawField, expectedDigit) {
     }
   }
 
-  // 3. Try single-character OCR confusion swap (O<->0, I<->1, B<->8, S<->5, Z<->2, G<->6)
-  //    in numeric positions (letter->digit and digit->letter for alphanumeric doc numbers),
-  //    accepting ONLY if exactly ONE unique correction passes the check digit.
   const swaps = {
-    O: "0", "0": "O",
-    I: "1", "1": "I",
-    B: "8", "8": "B",
-    S: "5", "5": "S",
-    Z: "2", "2": "Z",
-    G: "6", "6": "G"
+    O: ["0", "D"], "0": ["O", "D"],
+    D: ["0", "O"], Q: ["0"],
+    I: ["1", "L"], "1": ["I", "L"],
+    L: ["1", "I"],
+    B: ["8"], "8": ["B"],
+    S: ["5"], "5": ["S"],
+    Z: ["2"], "2": ["Z"],
+    G: ["6", "C"], "6": ["G"],
+    C: ["G", "E", "0"], E: ["F", "C"],
+    "9": ["5", "8"], "3": ["8"]
   };
   const validCandidates = [];
   for (let i = 0; i < rawField.length; i += 1) {
-    const alt = swaps[rawField[i]];
-    if (!alt) continue;
-    const cand = rawField.slice(0, i) + alt + rawField.slice(i + 1);
-    if (checkDigit(cand) === expectedDigit) {
-      validCandidates.push(cand);
+    const alts = swaps[rawField[i]];
+    if (!alts) continue;
+    for (const alt of alts) {
+      const cand = rawField.slice(0, i) + alt + rawField.slice(i + 1);
+      if (checkDigit(cand) === expectedDigit) {
+        validCandidates.push(cand);
+      }
     }
   }
   if (validCandidates.length === 1) {
@@ -440,22 +358,14 @@ function repairNumericPositionsWithCheck(rawField, expectedDigit) {
   return { value: rawField, repaired: false, valid: false };
 }
 
-/**
- * Clean a single raw OCR line: uppercase, normalize angle brackets, strip spaces/noise.
- */
 export function cleanOcrLine(rawLine) {
   return String(rawLine || "")
     .toUpperCase()
-    .replace(/[«‹⟨≤]/g, "<")
+    .replace(/[«‹⟨≤≥⟩›»([{)\]}\>]/g, "<")
     .replace(/\s+/g, "")
     .replace(/[^A-Z0-9<]/g, "");
 }
 
-/**
- * Validate and parse a strict TD3 pair (2 lines x 44 characters).
- * Returns { valid, errors, checks, data, rawLines }.
- * If ANY check fails, valid = false and data = null (no unchecked data returned).
- */
 export function validateTd3Pair(rawLine1, rawLine2, options = {}) {
   const referenceDate = options.referenceDate || new Date();
   const errors = [];
@@ -482,27 +392,27 @@ export function validateTd3Pair(rawLine1, rawLine2, options = {}) {
     return { valid: false, errors, checks, data: null, rawLines: [line1, line2] };
   }
 
-  // Line 1 pos 1-2: Document type ("P" + [A-Z<])
   checks.documentType = line1[0] === "P" && /^[A-Z<]$/.test(line1[1]);
   if (!checks.documentType) {
     errors.push(`Invalid TD3 passport document code "${line1.slice(0, 2)}" (must start with "P").`);
   }
 
-  // Line 1 pos 3-5: Issuing state (strict ISO 3166-1 alpha-3 / ICAO special code, NO digit->letter mutation)
-  const issuingState = line1.slice(2, 5);
+  let issuingState = line1.slice(2, 5);
+  if (!isValidIcaoCountryCode(issuingState)) {
+    const repState = repairIcaoCountryCode(issuingState);
+    if (repState) issuingState = repState;
+  }
   checks.issuingState = isValidIcaoCountryCode(issuingState);
   if (!checks.issuingState) {
     errors.push(`Invalid issuing state code "${issuingState}".`);
   }
 
-  // Line 1 pos 6-44: Name parsing (no digit<->letter correction!)
   const parsedName = parseTd3Name(line1);
   checks.name = parsedName.valid;
   if (!parsedName.valid) {
     errors.push(parsedName.error);
   }
 
-  // Line 2 pos 1-10: Passport number (9 chars) + check digit (pos 10)
   const rawPassport = line2.slice(0, 9);
   const passportCheckChar = line2[9];
   const passportExpected = parseCheckDigitChar(passportCheckChar, false);
@@ -516,14 +426,16 @@ export function validateTd3Pair(rawLine1, rawLine2, options = {}) {
     errors.push("Passport number check digit failed.");
   }
 
-  // Line 2 pos 11-13: Nationality (strict ISO 3166-1 alpha-3 / ICAO special code)
-  const nationalityCode = line2.slice(10, 13);
+  let nationalityCode = line2.slice(10, 13);
+  if (!isValidIcaoCountryCode(nationalityCode)) {
+    const repNat = repairIcaoCountryCode(nationalityCode);
+    if (repNat) nationalityCode = repNat;
+  }
   checks.nationality = isValidIcaoCountryCode(nationalityCode);
   if (!checks.nationality) {
     errors.push(`Invalid nationality code "${nationalityCode}".`);
   }
 
-  // Line 2 pos 14-20: Date of birth (6 digits) + check digit (pos 20)
   const dobRaw = toNumericField(line2.slice(13, 19));
   const dobExpected = parseCheckDigitChar(line2[19], false);
   const dobCheckPass = /^\d{6}$/.test(dobRaw) && dobExpected !== null && checkDigit(dobRaw) === dobExpected;
@@ -535,14 +447,12 @@ export function validateTd3Pair(rawLine1, rawLine2, options = {}) {
     errors.push(`Invalid date of birth "${dobRaw}".`);
   }
 
-  // Line 2 pos 21: Sex (M / F / <)
   const sexRaw = line2[20];
   checks.sex = sexRaw === "M" || sexRaw === "F" || sexRaw === "<";
   if (!checks.sex) {
     errors.push(`Invalid sex indicator "${sexRaw}" (must be M, F, or <).`);
   }
 
-  // Line 2 pos 22-28: Expiry date (6 digits) + check digit (pos 28)
   const expiryRaw = toNumericField(line2.slice(21, 27));
   const expiryExpected = parseCheckDigitChar(line2[27], false);
   const expiryCheckPass = /^\d{6}$/.test(expiryRaw) && expiryExpected !== null && checkDigit(expiryRaw) === expiryExpected;
@@ -554,7 +464,6 @@ export function validateTd3Pair(rawLine1, rawLine2, options = {}) {
     errors.push(`Invalid expiry date "${expiryRaw}".`);
   }
 
-  // Line 2 pos 29-43: Personal number (14 chars) + check digit (pos 43)
   const rawPersonal = line2.slice(28, 42);
   const isPersonalEmpty = /^<+$/.test(rawPersonal);
   const personalExpected = parseCheckDigitChar(line2[42], isPersonalEmpty);
@@ -568,8 +477,6 @@ export function validateTd3Pair(rawLine1, rawLine2, options = {}) {
     errors.push("Personal number check digit failed.");
   }
 
-  // Line 2 pos 44: Composite check digit over pos 1-10, 14-20, 22-43
-  // Note: If personal number is empty and pos 43 was "<", keep "<" in composite source (value 0).
   const personalCheckDigitCharForComposite = isPersonalEmpty && line2[42] === "<"
     ? "<"
     : personalExpected !== null ? String(personalExpected) : line2[42];
@@ -614,125 +521,62 @@ export function validateTd3Pair(rawLine1, rawLine2, options = {}) {
     document_type: line1.slice(0, 2).replace(/</g, ""),
     issuing_state: issuingState === "D<<" ? "D" : issuingState,
     issuing_state_code: issuingState,
+    issuing_country: issuingState === "D<<" ? "D" : issuingState,
     surname: parsedName.surname,
     given_names: parsedName.given_names,
     name: parsedName.full_name,
     name_truncated: parsedName.truncated,
     passport_no: verifiedPassport.replace(/</g, ""),
+    document_number: verifiedPassport.replace(/</g, ""),
     nationality_code: nationalityCode === "D<<" ? "D" : nationalityCode,
     nationality: NATIONALITY_LABELS[nationalityCode] || (nationalityCode === "D<<" ? "German" : nationalityCode),
     dob: dobIso,
+    birth_date: dobIso,
     sex: sexRaw === "<" ? null : sexRaw,
     sex_raw: sexRaw,
+    gender: sexRaw === "M" ? "Male" : sexRaw === "F" ? "Female" : "Unspecified",
     passport_expiry: expiryIso,
+    expiry_date: expiryIso,
     personal_number: verifiedPersonal.replace(/</g, "") || null,
+    optional_data: verifiedPersonal.replace(/</g, "") || "",
     mrz_line1: normalizedLine1,
     mrz_line2: normalizedLine2,
     checks,
-    score: 5 // All 5 ICAO check digits passed
+    all_checks_passed: true
   };
 
-  return {
-    valid: true,
-    errors: [],
-    checks,
-    data,
-    rawLines: [normalizedLine1, normalizedLine2]
-  };
+  return { valid: true, errors: [], checks, data, rawLines: [normalizedLine1, normalizedLine2] };
 }
 
-/**
- * Parse raw OCR text to find a strictly valid TD3 passport MRZ (2 lines x 44 chars).
- * Returns full structured result: { valid, errors, checks, data, rawLines }.
- * Rejects TD1/TD2, wrong line lengths, or any failed check digit / validation.
- */
 export function parseTd3Mrz(text, options = {}) {
-  if (!text || typeof text !== "string") {
-    return {
-      valid: false,
-      errors: ["Empty OCR text."],
-      checks: null,
-      data: null,
-      rawLines: []
-    };
+  const lines = cleanLines(text);
+  if (lines.length === 2) {
+    return validateTd3Pair(lines[0], lines[1], options);
   }
-
-  const cleanedLines = text
-    .split(/\r?\n/)
-    .map(cleanOcrLine)
-    .filter(line => line.length > 0);
-
-  // Filter strictly to exact 44-character lines (TD3 standard)
-  const exact44Lines = [];
-  for (let i = 0; i < cleanedLines.length; i += 1) {
-    if (cleanedLines[i].length === 44) {
-      exact44Lines.push({ index: i, text: cleanedLines[i] });
+  if (lines.length > 2) {
+    for (let i = 0; i <= lines.length - 2; i += 1) {
+      const res = validateTd3Pair(lines[i], lines[i + 1], options);
+      if (res.valid) return res;
     }
   }
-
-  if (exact44Lines.length < 2) {
-    const lengths = cleanedLines.map(l => l.length).join(", ") || "none";
-    return {
-      valid: false,
-      errors: [`No TD3 2×44 MRZ pair found (cleaned line lengths: ${lengths}).`],
-      checks: null,
-      data: null,
-      rawLines: cleanedLines
-    };
-  }
-
-  // Test adjacent 44-char pairs (prefer pairs that were adjacent in OCR output)
-  let bestFailure = null;
-  let bestFailScore = -1;
-
-  for (let i = 0; i < exact44Lines.length - 1; i += 1) {
-    const first = exact44Lines[i];
-    const second = exact44Lines[i + 1];
-    if (second.index - first.index > 2) continue; // Must be consecutive (allowing at most 1 stray artifact line)
-
-    const result = validateTd3Pair(first.text, second.text, options);
-    if (result.valid) {
-      return result;
-    }
-
-    const passCount = Object.values(result.checks).filter(Boolean).length;
-    if (passCount > bestFailScore) {
-      bestFailScore = passCount;
-      bestFailure = result;
-    }
-  }
-
-  return bestFailure || {
-    valid: false,
-    errors: ["No valid adjacent 44-character TD3 MRZ lines found."],
-    checks: null,
-    data: null,
-    rawLines: exact44Lines.map(x => x.text)
-  };
+  return { valid: false, errors: ["Could not find valid TD3 MRZ lines."], checks: {}, data: null };
 }
 
-/**
- * Convenience wrapper matching legacy signature:
- * Returns parsed TD3 data object ONLY when 100% valid; returns null otherwise.
- * Never returns unchecked or invalid data.
- */
 export function parseMrz(text, options = {}) {
-  const res = parseTd3Mrz(text, options);
+  const lines = cleanLines(text);
+  if (lines.length !== 2 || lines[0].length !== 44 || lines[1].length !== 44) {
+    return null;
+  }
+  const res = validateTd3Pair(lines[0], lines[1], options);
   return res.valid ? res.data : null;
 }
 
-/**
- * Pad or trim lines that are off by 1-2 chars (e.g. when OCR drops trailing '<').
- */
 export function fit(line, n) {
   if (!line || typeof line !== "string") return null;
   if (Math.abs(line.length - n) > 2) return null;
   return (line + "<".repeat(n)).slice(0, n);
 }
 
-/**
- * Filter and clean raw OCR lines, retaining only alphanumeric + '<' with length >= 26.
- */
 export function cleanLines(text) {
   if (!text || typeof text !== "string") return [];
   const lines = [];
@@ -745,9 +589,6 @@ export function cleanLines(text) {
   return lines;
 }
 
-/**
- * Direct TD3 parser matching the python scanner implementation.
- */
 export function parseTd3(l1, l2, options = {}) {
   const fitted1 = fit(l1, 44);
   const fitted2 = fit(l2, 44);
@@ -782,9 +623,6 @@ export function parseTd3(l1, l2, options = {}) {
   return null;
 }
 
-/**
- * TD2 parser (2 lines x 36 characters) matching the python scanner implementation.
- */
 export function parseTd2(l1, l2, options = {}) {
   const fitted1 = fit(l1, 36);
   const fitted2 = fit(l2, 36);
@@ -842,9 +680,6 @@ export function parseTd2(l1, l2, options = {}) {
   };
 }
 
-/**
- * TD1 parser (3 lines x 30 characters) matching the python scanner implementation.
- */
 export function parseTd1(l1, l2, l3, options = {}) {
   const fitted1 = fit(l1, 30);
   const fitted2 = fit(l2, 30);
@@ -902,10 +737,6 @@ export function parseTd1(l1, l2, l3, options = {}) {
   };
 }
 
-/**
- * Universal multi-format MRZ parser matching python try_parse(lines).
- * Tries TD3 (passports 2x44), TD1 (ID 3x30), and TD2 (ID 2x36).
- */
 export function tryParseMrz(textOrLines, options = {}) {
   const lines = Array.isArray(textOrLines) ? textOrLines : cleanLines(textOrLines);
   if (!lines || lines.length < 2) return null;
@@ -931,14 +762,145 @@ export function tryParseMrz(textOrLines, options = {}) {
   return null;
 }
 
-/**
- * Multi-frame per-character majority voting and N-consecutive-frame consensus tracker.
- *
- * Accepts a live scan ONLY when:
- * 1. Every accepted frame passes all 5 ICAO check digits and strict TD3 validation.
- * 2. Per-character majority voting stabilizes Line 1 (unchecked name) and Line 2.
- * 3. `requiredFrames` (default N = 3) consecutive valid frames agree on the exact parsed identity.
- */
+export function extractTd3Mrz(text, options = {}) {
+  if (!text || typeof text !== "string") {
+    return { valid: false, errors: ["No text provided"], checks: {}, data: null };
+  }
+
+  const rawLines = text.split(/\r?\n/).map(cleanOcrLine).filter(l => l.length >= 26);
+  if (!rawLines.length) {
+    return { valid: false, errors: ["No candidate MRZ lines detected."], checks: {}, data: null };
+  }
+
+  // Helper to test a pair of candidate strings with possible length corrections
+  const tryPair = (l1Candidate, l2Candidate) => {
+    // 1. Direct validation if both 44
+    if (l1Candidate.length === 44 && l2Candidate.length === 44) {
+      const res = validateTd3Pair(l1Candidate, l2Candidate, options);
+      if (res.valid) return res;
+    }
+
+    // 2. Try fit(44)
+    const f1 = fit(l1Candidate, 44);
+    const f2 = fit(l2Candidate, 44);
+    if (f1 && f2) {
+      const res = validateTd3Pair(f1, f2, options);
+      if (res.valid) return res;
+    }
+
+    // 3. Handle single-character OCR insertions (e.g. line length is 45)
+    if (l2Candidate.length === 45) {
+      let bestHit = null;
+      for (let idx = 44; idx >= 0; idx -= 1) {
+        if (l2Candidate[idx] === "<") continue;
+        const cand2 = l2Candidate.slice(0, idx) + l2Candidate.slice(idx + 1);
+        const res = validateTd3Pair(f1 || l1Candidate, cand2, options);
+        if (res.valid) {
+          const persRaw = cand2.slice(28, 42);
+          const cd = parseCheckDigitChar(cand2[42], /^<+$/.test(persRaw));
+          if (cd !== null && checkDigit(persRaw) === cd) {
+            return res;
+          }
+          if (!bestHit) bestHit = res;
+        }
+      }
+      if (bestHit) return bestHit;
+    }
+
+    if (l1Candidate.length === 45) {
+      for (let idx = 44; idx >= 0; idx -= 1) {
+        if (l1Candidate[idx] === "<") continue;
+        const cand1 = l1Candidate.slice(0, idx) + l1Candidate.slice(idx + 1);
+        const res = validateTd3Pair(cand1, f2 || l2Candidate, options);
+        if (res.valid) return res;
+      }
+    }
+    return null;
+  };
+
+  // Phase 1: Try pairs of adjacent or nearby lines directly
+  for (let i = 0; i < rawLines.length; i += 1) {
+    const l1 = rawLines[i];
+    for (let j = i + 1; j < Math.min(rawLines.length, i + 3); j += 1) {
+      const l2 = rawLines[j];
+      const res = tryPair(l1, l2);
+      if (res) return res;
+    }
+  }
+
+  // Phase 2a: Exact 44-char substring match (zero deletions/alterations)
+  for (const raw1 of rawLines) {
+    const pIdx = raw1.indexOf("P<");
+    if (pIdx === -1 || raw1.length < pIdx + 44) continue;
+    const sub1 = raw1.slice(pIdx, pIdx + 44);
+
+    for (const raw2 of rawLines) {
+      if (raw2 === raw1) continue;
+      for (let offset = 0; offset <= raw2.length - 44; offset += 1) {
+        const sub2 = raw2.slice(offset, offset + 44);
+        const res = validateTd3Pair(sub1, sub2, options);
+        if (res.valid) return res;
+      }
+    }
+  }
+
+  // Phase 2b: Sliding window substring search with ±1 char insertion/deletion recovery
+  let bestPairRes = null;
+  for (const raw1 of rawLines) {
+    // Search for P< or 0< or country patterns
+    let base1 = raw1;
+    if (base1.startsWith("0<")) base1 = "P<" + base1.slice(2);
+    if (base1.length < 44 && base1.length >= 28 && base1.startsWith("P<")) {
+      base1 = base1.padEnd(44, "<");
+    }
+
+    let pIdx = base1.indexOf("P<");
+    if (pIdx === -1) {
+      const match = base1.match(/P[A-Z<]/);
+      if (match) pIdx = match.index;
+    }
+    if (pIdx === -1) continue;
+
+    for (let len1 of [44, 45, 43]) {
+      if (pIdx + len1 > base1.length + 2) continue;
+      const sub1 = base1.slice(pIdx, pIdx + len1);
+
+      for (const raw2 of rawLines) {
+        if (raw2 === raw1) continue;
+        for (let offset = 0; offset <= Math.max(0, raw2.length - 42); offset += 1) {
+          for (let len2 of [44, 45, 43]) {
+            if (offset + len2 > raw2.length + 2) continue;
+            const sub2 = raw2.slice(offset, offset + len2);
+            const res = tryPair(sub1, sub2);
+            if (res) {
+              const rawDoc = sub2.slice(0, 9);
+              if (checkDigit(rawDoc) === Number(sub2[9])) {
+                return res;
+              }
+              if (!bestPairRes) bestPairRes = res;
+            }
+          }
+        }
+      }
+    }
+  }
+  if (bestPairRes) return bestPairRes;
+
+  // Phase 3: Fall back to tryParseMrz for TD3 recovery
+  const td3Fallback = tryParseMrz(rawLines, options);
+  if (td3Fallback && td3Fallback.format === "TD3" && td3Fallback.all_checks_passed) {
+    return {
+      valid: true,
+      errors: [],
+      checks: td3Fallback.checks,
+      data: td3Fallback,
+      rawLines: td3Fallback.rawLines
+    };
+  }
+
+  return { valid: false, errors: ["No valid TD3 passport MRZ could be verified."], checks: {}, data: null };
+}
+
 export class MrzFrameConsensus {
   constructor({ requiredFrames = 3, maxWindow = 7 } = {}) {
     this.requiredFrames = requiredFrames;
@@ -953,9 +915,6 @@ export class MrzFrameConsensus {
     this.missedStreak = 0;
   }
 
-  /**
-   * Compute per-character majority vote across buffered 44-char lines.
-   */
   static majorityVoteLine(lines) {
     let out = "";
     for (let pos = 0; pos < 44; pos += 1) {
@@ -966,7 +925,6 @@ export class MrzFrameConsensus {
         const ch = line[pos];
         const next = (counts.get(ch) || 0) + 1;
         counts.set(ch, next);
-        // On tie, prefer the most recent frame's character
         if (next >= bestCount) {
           bestCount = next;
           bestChar = ch;
@@ -977,10 +935,6 @@ export class MrzFrameConsensus {
     return out;
   }
 
-  /**
-   * Feed a new OCR text frame.
-   * @returns {{ locked: boolean, validFrame: boolean, consecutive: number, required: number, data: object|null, errors: string[] }}
-   */
   push(ocrText, options = {}) {
     let parsed = parseTd3Mrz(ocrText, options);
     if (!parsed.valid) {
@@ -991,7 +945,6 @@ export class MrzFrameConsensus {
     }
     if (!parsed.valid) {
       this.missedStreak += 1;
-      // Allow 1 momentary blur frame without wiping out progress; reset after 2 consecutive misses
       if (this.missedStreak >= 2) {
         this.consecutiveMatches = 0;
         this.lastConsensusKey = null;
@@ -1002,62 +955,36 @@ export class MrzFrameConsensus {
         consecutive: this.consecutiveMatches,
         required: this.requiredFrames,
         data: null,
-        errors: parsed.errors
+        errors: parsed.errors || ["MRZ validation failed."]
       };
     }
 
     this.missedStreak = 0;
-    const [line1, line2] = parsed.rawLines;
+    this.frames.push(parsed.rawLines);
+    if (this.frames.length > this.maxWindow) this.frames.shift();
 
-    // If passport number changed completely (user swapped passports), reset buffer
-    if (
-      this.frames.length > 0 &&
-      this.frames[this.frames.length - 1].passport_no !== parsed.data.passport_no
-    ) {
-      this.reset();
-    }
+    const line1Votes = this.frames.map(f => f[0]);
+    const line2Votes = this.frames.map(f => f[1]);
+    const votedL1 = MrzFrameConsensus.majorityVoteLine(line1Votes);
+    const votedL2 = MrzFrameConsensus.majorityVoteLine(line2Votes);
 
-    this.frames.push({
-      line1,
-      line2,
-      passport_no: parsed.data.passport_no
-    });
-    if (this.frames.length > this.maxWindow) {
-      this.frames.shift();
-    }
-
-    // Per-character majority voting across the buffered valid frames
-    const votedLine1 = MrzFrameConsensus.majorityVoteLine(this.frames.map(f => f.line1));
-    const votedLine2 = MrzFrameConsensus.majorityVoteLine(this.frames.map(f => f.line2));
-
-    // Re-validate the voted consensus pair strictly!
-    const consensus = validateTd3Pair(votedLine1, votedLine2, options);
-    if (!consensus.valid) {
-      this.consecutiveMatches = 0;
-      this.lastConsensusKey = null;
+    const validated = validateTd3Pair(votedL1, votedL2, options);
+    if (!validated.valid || !validated.data) {
       return {
         locked: false,
-        validFrame: false,
-        consecutive: 0,
+        validFrame: true,
+        consecutive: this.consecutiveMatches,
         required: this.requiredFrames,
         data: null,
-        errors: consensus.errors
+        errors: validated.errors
       };
     }
 
-    // Check consecutive agreement on key fields (including surname & given_names!)
-    const key = [
-      consensus.data.passport_no,
-      consensus.data.dob,
-      consensus.data.passport_expiry,
-      consensus.data.surname,
-      consensus.data.given_names
-    ].join("|");
-
-    if (key === this.lastConsensusKey) {
+    const consensusKey = `${validated.data.passport_no}:${validated.data.dob}:${validated.data.name}`;
+    if (consensusKey === this.lastConsensusKey) {
       this.consecutiveMatches += 1;
     } else {
-      this.lastConsensusKey = key;
+      this.lastConsensusKey = consensusKey;
       this.consecutiveMatches = 1;
     }
 
@@ -1067,82 +994,49 @@ export class MrzFrameConsensus {
       validFrame: true,
       consecutive: this.consecutiveMatches,
       required: this.requiredFrames,
-      data: locked ? consensus.data : null,
-      preview: consensus.data,
+      data: locked ? validated.data : null,
       errors: []
     };
   }
 }
 
-/**
- * Standard Levenshtein edit distance.
- */
-export function levenshtein(a, b) {
-  const s = String(a || "");
-  const t = String(b || "");
-  if (s === t) return 0;
-  if (!s.length) return t.length;
-  if (!t.length) return s.length;
-
-  const prev = new Uint16Array(t.length + 1);
-  const curr = new Uint16Array(t.length + 1);
-  for (let j = 0; j <= t.length; j += 1) prev[j] = j;
-
-  for (let i = 1; i <= s.length; i += 1) {
-    curr[0] = i;
-    const sc = s.charCodeAt(i - 1);
-    for (let j = 1; j <= t.length; j += 1) {
-      const cost = sc === t.charCodeAt(j - 1) ? 0 : 1;
-      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
-    }
-    prev.set(curr);
-  }
-  return prev[t.length];
-}
-
-/**
- * Normalize printed VIZ or MRZ name text for diacritic- and case-insensitive comparison.
- * Expands common ICAO transliterations (Ä->AE, Ö->OE, Ü->UE, ß->SS, Æ->AE, Ø->OE, Å->AA).
- */
-export function normalizeForNameMatch(text) {
-  return String(text || "")
-    .replace(/Ä/g, "AE").replace(/ä/g, "AE")
-    .replace(/Ö/g, "OE").replace(/ö/g, "OE")
-    .replace(/Ü/g, "UE").replace(/ü/g, "UE")
-    .replace(/ß/g, "SS")
-    .replace(/Æ/g, "AE").replace(/æ/g, "AE")
-    .replace(/Ø/g, "OE").replace(/ø/g, "OE")
-    .replace(/Å/g, "AA").replace(/å/g, "AA")
+function normalizeForNameMatch(str) {
+  return String(str || "")
+    .toUpperCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .toUpperCase()
-    .replace(/['’-]/g, " ")
     .replace(/[^A-Z\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function tokenSimilarity(a, b) {
-  if (!a || !b) return 0;
-  if (a === b) return 1;
-  const maxLen = Math.max(a.length, b.length);
-  return 1 - levenshtein(a, b) / maxLen;
+function levenshteinDistance(a, b) {
+  const m = a.length;
+  const n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  const row = Array.from({ length: n + 1 }, (_, i) => i);
+  for (let i = 1; i <= m; i += 1) {
+    let prev = row[0];
+    row[0] = i;
+    for (let j = 1; j <= n; j += 1) {
+      const temp = row[j];
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + cost);
+      prev = temp;
+    }
+  }
+  return row[n];
 }
 
-/**
- * Cross-verify the MRZ-parsed name (which has no ICAO check digit) against OCR text
- * captured from the passport's Visual Inspection Zone (VIZ).
- *
- * @param {{ surname: string, given_names: string, name_truncated?: boolean }} mrzData
- * @param {string} vizText - Raw OCR text from the upper passport data page
- * @returns {{
- *   status: "verified" | "mismatch" | "unavailable",
- *   score: number,
- *   matchedTokens: string[],
- *   unmatchedTokens: string[],
- *   message: string
- * }}
- */
+function tokenSimilarity(tok1, tok2) {
+  if (tok1 === tok2) return 1;
+  const maxLen = Math.max(tok1.length, tok2.length);
+  if (maxLen === 0) return 1;
+  const dist = levenshteinDistance(tok1, tok2);
+  return 1 - dist / maxLen;
+}
+
 export function crossVerifyNameWithViz(mrzData, vizText) {
   const mrzSurnameTokens = normalizeForNameMatch(mrzData?.surname || "").split(" ").filter(Boolean);
   const mrzGivenTokens = normalizeForNameMatch(mrzData?.given_names || "").split(" ").filter(Boolean);
@@ -1182,14 +1076,12 @@ export function crossVerifyNameWithViz(mrzData, vizText) {
 
     for (const vt of vizTokens) {
       let sim = tokenSimilarity(token, vt);
-      // If MRZ was truncated at 39 chars, allow prefix match on the last token (e.g. "SHAHIDU" vs "SHAHIDUL")
       if (isLastTruncatedToken && vt.length > token.length && vt.startsWith(token.slice(0, Math.max(3, token.length - 1)))) {
         sim = Math.max(sim, tokenSimilarity(token, vt.slice(0, token.length)));
       }
       if (sim > bestSim) bestSim = sim;
     }
 
-    // Also test adjacent joined VIZ tokens (in case VIZ split a word or MRZ omitted space)
     for (let j = 0; j < vizTokens.length - 1; j += 1) {
       const joined = vizTokens[j] + vizTokens[j + 1];
       const sim = tokenSimilarity(token, joined);
@@ -1197,7 +1089,6 @@ export function crossVerifyNameWithViz(mrzData, vizText) {
     }
 
     totalSim += bestSim;
-    // Allow 1 edit on tokens >= 5 chars (sim >= 0.8), exact match on short tokens <= 3 chars
     const threshold = token.length <= 3 ? 0.99 : token.length === 4 ? 0.75 : 0.80;
     if (bestSim >= threshold) {
       matchedTokens.push(token);

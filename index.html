@@ -10,43 +10,43 @@
   <meta name="format-detection" content="telephone=no">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
-  <meta name="description" content="ZK Recruiting Agency — Bangladesh to Malaysia overseas employment & passport management system">
+  <meta name="description" content="ZK Recruiting Agency - Bangladesh to Malaysia overseas employment & passport management system">
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" type="image/svg+xml" href="./icon.svg">
   <link rel="apple-touch-icon" href="./icon.svg">
   <link rel="stylesheet" href="./styles.css">
-  <title>ZK Recruiting Agency — Passport Desk</title>
+  <title>ZK Recruiting Agency - Passport Desk</title>
 </head>
 <body>
   <header class="app-header">
     <div class="header-brand">
-      <span class="brand-icon">🛂</span>
+      <span class="brand-icon" aria-hidden="true">PD</span>
       <h1>ZK Recruiting Agency</h1>
     </div>
     <div class="header-actions">
-      <button id="theme-toggle" class="icon-button" aria-label="Toggle colour theme">◐</button>
-      <span id="sync-pill" role="status">Starting…</span>
+      <button id="theme-toggle" class="icon-button theme-toggle" aria-label="Toggle colour theme" title="Toggle theme">Aa</button>
+      <span id="sync-pill" role="status">Starting...</span>
     </div>
   </header>
   <main id="app" class="app-main">
     <section id="login-view" class="panel login-panel">
-      <div class="login-brand-icon">🛂</div>
+      <div class="login-brand-icon" aria-hidden="true">PD</div>
       <h2>ZK Recruiting Agency</h2>
-      <p class="subtitle">Bangladesh → Malaysia Recruitment Ledger</p>
+      <p class="subtitle">Bangladesh -> Malaysia Recruitment Ledger</p>
 
       <div class="login-form">
         <label>Office Account Email
           <input id="login-email" type="email" autocomplete="username" inputmode="email" placeholder="admin@passportdesk.local">
         </label>
         <label>Password
-          <input id="login-password" type="password" autocomplete="current-password" placeholder="••••••••">
+          <input id="login-password" type="password" autocomplete="current-password" placeholder="********">
         </label>
-        <p id="login-error" class="error" role="alert" style="display:none;"></p>
-        <button id="login-button" type="button" class="primary full btn-lg" style="margin-top:16px;">Sign in &amp; Start Work</button>
+        <p id="login-error" class="error hidden-block" role="alert"></p>
+        <button id="login-button" type="button" class="primary full btn-lg login-submit">Sign in &amp; Start Work</button>
       </div>
 
       <div class="login-footer-hint">
-        <span class="hint-badge">🛡️ Administrator Access</span>
+        <span class="hint-badge">Administrator Access</span>
         <span class="hint-text">Grants full permissions: Workers, Passports, Finance &amp; Ledgers</span>
       </div>
     </section>
@@ -104,7 +104,7 @@
     <form method="dialog" id="record-form">
       <div class="dialog-heading">
         <h2 id="form-title">Record</h2>
-        <button type="button" class="icon-button dialog-close-btn" data-close aria-label="Close">✕</button>
+        <button type="button" class="icon-button dialog-close-btn" data-close aria-label="Close">x</button>
       </div>
       <div id="form-fields" class="form-grid"></div>
       <div id="form-warning" class="warning" hidden></div>
@@ -125,47 +125,47 @@
     <div class="sheet-handle"></div>
     <div class="dialog-heading">
       <h2>Record history</h2>
-      <button type="button" class="icon-button dialog-close-btn" data-close aria-label="Close">✕</button>
+      <button type="button" class="icon-button dialog-close-btn" data-close aria-label="Close">x</button>
     </div>
     <div id="history-list"></div>
   </dialog>
-  <dialog id="agency-dialog" class="record-dialog" style="max-width: 480px;">
+  <dialog id="agency-dialog" class="record-dialog dialog-modal-sm">
     <div class="sheet-handle"></div>
     <div class="dialog-heading">
       <h2 id="agency-dialog-title">Manage Submission Agencies</h2>
-      <button type="button" class="icon-button dialog-close-btn" data-close aria-label="Close">✕</button>
+      <button type="button" class="icon-button dialog-close-btn" data-close aria-label="Close">x</button>
     </div>
-    <form id="agency-form" onsubmit="return false;" style="margin-top: 6px;">
-      <p id="agency-form-desc" style="font-size:13px; color:var(--muted); margin-bottom:10px;">Add a new agency or choose from the list below to edit or delete.</p>
+    <form id="agency-form" class="dialog-form-pad" onsubmit="return false;">
+      <p id="agency-form-desc" class="muted-form-desc">Add a new agency or choose from the list below to edit or delete.</p>
       <input type="hidden" id="editing-agency-old-name" value="">
       <label id="agency-input-label">Agency Name
         <input id="new-agency-name" type="text" placeholder="e.g. Eastern Agency, Al-Razi Recruiting" required autofocus>
       </label>
-      <div class="button-row" style="margin-top: 14px;">
-        <button type="button" id="btn-save-agency" class="primary btn-lg">➕ Save Agency</button>
-        <button type="button" id="btn-cancel-edit-agency" class="secondary btn-lg" style="display:none;">Cancel Edit</button>
+      <div class="button-row dialog-action-row">
+        <button type="button" id="btn-save-agency" class="primary btn-lg">Save Agency</button>
+        <button type="button" id="btn-cancel-edit-agency" class="secondary btn-lg hidden-block">Cancel Edit</button>
         <button type="button" data-close class="secondary">Done</button>
       </div>
     </form>
 
-    <div style="margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-        <h3 style="font-size: 13px; margin: 0; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink);">Registered Agencies</h3>
+    <div class="agency-manage-section">
+      <div class="agency-manage-header">
+        <h3 class="section-micro-title">Registered Agencies</h3>
         <span id="agency-count-badge" class="tag good">0</span>
       </div>
-      <div id="agency-manage-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow-y: auto; padding-right: 2px;">
+      <div id="agency-manage-list" class="agency-manage-list">
         <!-- Agencies with edit/delete will be rendered here -->
       </div>
     </div>
   </dialog>
-  <dialog id="takeback-dialog" class="record-dialog" style="max-width: 480px;">
+  <dialog id="takeback-dialog" class="record-dialog dialog-modal-sm">
     <div class="sheet-handle"></div>
     <div class="dialog-heading">
-      <h2>↩️ Agent Passport Withdrawal</h2>
-      <button type="button" class="icon-button dialog-close-btn" data-close aria-label="Close">✕</button>
+      <h2>Agent Passport Withdrawal</h2>
+      <button type="button" class="icon-button dialog-close-btn" data-close aria-label="Close">x</button>
     </div>
-    <form id="takeback-form" onsubmit="return false;" style="margin-top: 6px;">
-      <div id="takeback-worker-info" style="background: color-mix(in srgb, var(--amber) 12%, var(--panel)); border: 1px solid var(--amber); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px;">
+    <form id="takeback-form" class="dialog-form-pad" onsubmit="return false;">
+      <div id="takeback-worker-info" class="takeback-info-box">
       </div>
       <input type="hidden" id="takeback-worker-id">
       
@@ -201,12 +201,12 @@
         <textarea id="takeback-notes" rows="2" placeholder="e.g. Took original passport booklet, token/slip issued"></textarea>
       </label>
 
-      <div class="button-row" style="margin-top: 14px; flex-direction: column; gap: 8px;">
-        <button type="button" id="btn-save-takeback" class="primary btn-lg" style="background: #b45309; border-color: #b45309; color: #fff; font-weight: 750;">
-          ↩️ Confirm Handover to Agent
+      <div class="button-row button-row-stack dialog-action-row">
+        <button type="button" id="btn-save-takeback" class="primary btn-lg btn-takeback">
+          Confirm Handover to Agent
         </button>
-        <button type="button" id="btn-save-and-print-takeback" class="secondary btn-lg" style="font-weight: 600;">
-          🖨️ Confirm &amp; Print Return Slip
+        <button type="button" id="btn-save-and-print-takeback" class="secondary btn-lg strong-action">
+          Confirm &amp; Print Return Slip
         </button>
         <button type="button" data-close class="secondary">Cancel</button>
       </div>
@@ -215,10 +215,10 @@
   <dialog id="scanner-dialog" class="scanner-dialog">
     <div class="scanner-head">
       <div>
-        <h2 style="margin:0; font-size:18px;">🛂 Fast Passport Scanner</h2>
-        <span style="font-size:11.5px; color:#9ca3af;">Just point at the passport — auto-detects anywhere</span>
+        <h2>Fast Passport Scanner</h2>
+        <span>Just point at the passport - auto-detects anywhere</span>
       </div>
-      <button type="button" class="icon-button scanner-close-btn" data-close aria-label="Close">✕</button>
+      <button type="button" class="icon-button scanner-close-btn" data-close aria-label="Close">x</button>
     </div>
     <div class="video-wrap">
       <video id="camera-video" playsinline muted></video>
@@ -232,35 +232,35 @@
         <span id="consensus-label">Point at passport anywhere in view</span>
       </div>
     </div>
-    <p id="scanner-status" role="status" aria-live="polite">Point camera at the passport — no need to align inside a box.</p>
+    <p id="scanner-status" role="status" aria-live="polite">Point camera at the passport - no need to align inside a box.</p>
     <div class="scanner-actions">
-      <button id="capture-now-button" type="button" class="primary btn-lg full">📸 Capture Now (Instant Scan)</button>
+      <button id="capture-now-button" type="button" class="primary btn-lg full">Capture Now</button>
       <div class="button-row">
-        <button id="torch-button" type="button" class="secondary" hidden>🔦 Torch</button>
-        <button id="photo-button" type="button" class="secondary">🖼️ Pick Photo</button>
-        <button id="scanner-manual-btn" type="button" class="secondary">✏️ Manual</button>
+        <button id="torch-button" type="button" class="secondary" hidden>Torch</button>
+        <button id="photo-button" type="button" class="secondary">Pick Photo</button>
+        <button id="scanner-manual-btn" type="button" class="secondary">Manual</button>
         <button type="button" data-close class="secondary">Cancel</button>
       </div>
       <input id="photo-input" type="file" accept="image/*" capture="environment" hidden>
     </div>
   </dialog>
 
-  <dialog id="scan-review-dialog" class="record-dialog" style="max-width: 540px;">
+  <dialog id="scan-review-dialog" class="record-dialog scan-review-dialog">
     <div class="sheet-handle"></div>
     <div class="dialog-heading">
       <h2>Verify Scanned Passport (TD3)</h2>
-      <button type="button" class="icon-button dialog-close-btn" data-close aria-label="Close">✕</button>
+      <button type="button" class="icon-button dialog-close-btn" data-close aria-label="Close">x</button>
     </div>
     <div id="scan-review-content" class="scan-review-body">
       <!-- Populated dynamically with editable fields, 5 ICAO checks & VIZ cross-verification -->
     </div>
-    <div class="dialog-footer" style="margin-top: 14px;">
+    <div class="dialog-footer scan-review-footer">
       <div class="button-row">
-        <button type="button" id="btn-accept-scan" class="primary btn-lg full">✓ Confirm &amp; Register Candidate</button>
+        <button type="button" id="btn-accept-scan" class="primary btn-lg full">Confirm &amp; Register Candidate</button>
       </div>
       <div class="button-row secondary-actions">
-        <button type="button" id="btn-rescan" class="secondary">🔄 Rescan</button>
-        <button type="button" id="btn-manual-from-review" class="secondary">✏️ Empty Manual Form</button>
+        <button type="button" id="btn-rescan" class="secondary">Rescan</button>
+        <button type="button" id="btn-manual-from-review" class="secondary">Open in Full Form</button>
         <button type="button" data-close class="secondary">Cancel</button>
       </div>
     </div>
