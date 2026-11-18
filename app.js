@@ -172,6 +172,7 @@ function toast(message) {
     element.setAttribute("role", "status");
     document.body.append(element);
   }
+  element.classList.add("toast");
   element.textContent = message;
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => element.remove(), 3800);
@@ -1323,13 +1324,13 @@ function renderDashboard() {
   }).filter(item => item.count > 0 || item.stamped > 0);
 
   $("#page-dashboard").innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+    <div class="page-heading">
       <div>
         <h2 style="margin:0;">Office Dashboard</h2>
         <div class="meta" style="font-size:12px;">Real-time passport tracking &amp; phone briefing</div>
       </div>
       <button type="button" id="btn-copy-briefing" class="primary" style="font-size:13px; font-weight:700; padding:8px 14px; border-radius:10px; background:#14532d;">
-         Copy Phone / WhatsApp Briefing
+         Copy WhatsApp Briefing
       </button>
     </div>
 
@@ -1337,14 +1338,14 @@ function renderDashboard() {
     <div class="quick-action-grid">
       ${isWritable() ? `
         <div class="quick-action-card" id="qa-scan">
-          <span class="qa-icon"></span>
+          <span class="qa-icon">MRZ</span>
           <div>
             <div>Scan Passport</div>
             <div class="meta" style="font-size:11px;">Camera MRZ reader</div>
           </div>
         </div>
         <div class="quick-action-card" id="qa-add">
-          <span class="qa-icon"></span>
+          <span class="qa-icon">+</span>
           <div>
             <div>New Candidate</div>
             <div class="meta" style="font-size:11px;">Add passport record</div>
@@ -1352,14 +1353,14 @@ function renderDashboard() {
         </div>
       ` : ""}
       <div class="quick-action-card" id="qa-pdf" style="grid-column: ${isWritable() ? 'auto' : 'span 2'};">
-        <span class="qa-icon"></span>
+        <span class="qa-icon">PDF</span>
         <div>
           <div>Download Manifest</div>
           <div class="meta" style="font-size:11px;">A4 Landscape Print</div>
         </div>
       </div>
       <div class="quick-action-card" id="qa-agency">
-        <span class="qa-icon"></span>
+        <span class="qa-icon">ADM</span>
         <div>
           <div>Manage Agencies</div>
           <div class="meta" style="font-size:11px;">Add, edit &amp; delete</div>
@@ -1713,7 +1714,7 @@ function renderWorkers() {
     </div>`;
   }
 
-  $("#page-workers").innerHTML = `<h2>Workers &amp; Passports</h2>
+  $("#page-workers").innerHTML = `<div class="page-heading page-heading-compact"><div><h2>Candidates &amp; Passports</h2><div class="meta">Malaysia recruitment operations register</div></div></div>
     <div class="search-bar">
       <div class="search-input-wrap">
         <svg class="search-icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
@@ -1784,7 +1785,7 @@ function renderWorkers() {
     </div>
 
     <div class="list-count">${list.length} candidate(s)  -  page ${state.pageIndex + 1} of ${Math.max(1, Math.ceil(list.length / PAGE_SIZE))}</div>
-    ${visible.length ? visible.map(workerCard).join("") : emptyStateHtml}
+    <div class="record-grid">${visible.length ? visible.map(workerCard).join("") : emptyStateHtml}</div>
     <div class="button-row"><button id="prev-page" ${state.pageIndex ? "" : "disabled"}>Previous</button><button id="next-page" ${(state.pageIndex + 1) * PAGE_SIZE < list.length ? "" : "disabled"}>Next</button></div>`;
 
   document.querySelectorAll(".filter-chip").forEach(chip => {
@@ -3118,6 +3119,7 @@ async function signOut() {
 function showAuth() {
   const configured = !String(config.supabaseUrl || "").includes("PASTE") && config.supabaseAnonKey && !String(config.supabaseAnonKey).includes("PASTE");
   const isLoggedIn = !!state.user && !!state.role;
+  document.body.classList.toggle("authenticated", isLoggedIn);
   $("#login-view").hidden = isLoggedIn;
   $("#setup-view").hidden = true;
   $("#app-view").hidden = !isLoggedIn;
