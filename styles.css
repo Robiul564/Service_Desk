@@ -1173,42 +1173,6 @@ label input, label select, label textarea {
   object-fit: cover;
 }
 
-/* Open, Box-Free Auto-Detect Viewfinder */
-.viewfinder-corners {
-  position: absolute;
-  inset: 14px;
-  border-radius: 16px;
-  pointer-events: none;
-  background:
-    linear-gradient(to right, rgba(74, 222, 128, 0.75) 3px, transparent 3px) 0 0 / 26px 26px no-repeat,
-    linear-gradient(to bottom, rgba(74, 222, 128, 0.75) 3px, transparent 3px) 0 0 / 26px 26px no-repeat,
-    linear-gradient(to left, rgba(74, 222, 128, 0.75) 3px, transparent 3px) 100% 0 / 26px 26px no-repeat,
-    linear-gradient(to bottom, rgba(74, 222, 128, 0.75) 3px, transparent 3px) 100% 0 / 26px 26px no-repeat,
-    linear-gradient(to right, rgba(74, 222, 128, 0.75) 3px, transparent 3px) 0 100% / 26px 26px no-repeat,
-    linear-gradient(to top, rgba(74, 222, 128, 0.75) 3px, transparent 3px) 0 100% / 26px 26px no-repeat,
-    linear-gradient(to left, rgba(74, 222, 128, 0.75) 3px, transparent 3px) 100% 100% / 26px 26px no-repeat,
-    linear-gradient(to top, rgba(74, 222, 128, 0.75) 3px, transparent 3px) 100% 100% / 26px 26px no-repeat;
-}
-
-.scanner-laser {
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: linear-gradient(90deg, transparent 5%, #4ade80 30%, #86efac 50%, #4ade80 70%, transparent 95%);
-  box-shadow: 0 0 12px 2px rgba(74, 222, 128, 0.7);
-  pointer-events: none;
-  animation: scanLaser 2.2s ease-in-out infinite alternate;
-  z-index: 2;
-}
-
-@keyframes scanLaser {
-  0% { top: 10%; opacity: 0.3; }
-  20% { opacity: 0.95; }
-  80% { opacity: 0.95; }
-  100% { top: 90%; opacity: 0.3; }
-}
-
 .scan-success-flash {
   position: absolute;
   inset: 0;
@@ -1221,32 +1185,6 @@ label input, label select, label textarea {
 
 .scan-success-flash.active {
   opacity: 1;
-}
-
-.auto-mrz-highlight {
-  position: absolute;
-  border: 2.5px solid #4ade80;
-  background: rgba(74, 222, 128, 0.18);
-  border-radius: 8px;
-  box-shadow: 0 0 18px rgba(74, 222, 128, 0.55), inset 0 0 8px rgba(74, 222, 128, 0.2);
-  pointer-events: none;
-  transition: left 0.15s ease, top 0.15s ease, width 0.15s ease, height 0.15s ease;
-  z-index: 3;
-}
-
-.auto-mrz-highlight::before {
-  content: "PASSPORT MRZ";
-  position: absolute;
-  top: -20px;
-  left: 4px;
-  font-size: 9.5px;
-  font-weight: 800;
-  letter-spacing: 0.6px;
-  color: #4ade80;
-  background: rgba(9, 14, 11, 0.88);
-  padding: 1px 6px;
-  border-radius: 4px;
-  border: 1px solid rgba(74, 222, 128, 0.4);
 }
 
 .consensus-pill {

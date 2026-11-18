@@ -1,5 +1,3 @@
-import { extractTd3Mrz, tryParseMrz } from "./mrz.mjs";
-
 const TABLES = ["workers", "agents", "companies", "payments", "handovers", "expenses", "user_profiles", "history"];
 const DATA_TABLES = TABLES.filter(table => !["user_profiles", "history"].includes(table));
 const DB_NAME = "passport-desk-v3";
@@ -104,10 +102,9 @@ const state = {
   camera: null,
   scannerActive: false,
   scanBusy: false,
-  scanTickCount: 0,
-  lastScanAt: 0,
-  ocrWorker: null,
-  ocrWorkerPromise: null,
+  mrzWorker: null,
+  mrzRequestId: 0,
+  mrzRequests: new Map(),
   saving: false,
   db: null,
   dbUser: null,
@@ -2484,284 +2481,154 @@ async function restoreBackup(file) {
   toast("Backup restored. Changes are queued for sync.");
 }
 
-async function ensureTesseractLoaded() {
-  if (window.Tesseract) return;
-  try {
-    await loadScript("./vendor/tesseract/tesseract.min.js");
-  } catch (_) {
-    await loadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js");
-  }
-}
-
-async function getOcrWorker() {
-  await ensureTesseractLoaded();
-  navigator.serviceWorker?.controller?.postMessage("CACHE_OCR");
-
-  if (state.ocrWorker) return state.ocrWorker;
-  if (state.ocrWorkerPromise) return state.ocrWorkerPromise;
-
-  state.ocrWorkerPromise = (async () => {
-    $("#scanner-status").textContent = "Initializing passport MRZ scanner...";
-    let worker;
-    try {
-      // Try local self-hosted OCR-B model first (fast, 100% offline)
-      worker = await window.Tesseract.createWorker("mrz", 1, {
-        workerPath: "./vendor/tesseract/worker.min.js",
-        corePath: "./vendor/tesseract/",
-        langPath: "./model/",
-        gzip: true,
-        cacheMethod: "none"
-      });
-    } catch (err) {
-      console.warn("Local MRZ worker load failed, falling back to CDN/eng:", err);
-      worker = await window.Tesseract.createWorker("eng");
+function ensureMrzWorker() {
+  if (state.mrzWorker) return state.mrzWorker;
+  navigator.serviceWorker?.controller?.postMessage("CACHE_MRZ");
+  const worker = new Worker("./vendor/mrz-scanner/worker.js", { type: "module" });
+  worker.addEventListener("message", event => {
+    const message = event.data || {};
+    const pending = state.mrzRequests.get(message.id);
+    if (!pending) return;
+    if (message.type === "progress") {
+      pending.onProgress?.(message.stage);
+    } else if (message.type === "result") {
+      state.mrzRequests.delete(message.id);
+      pending.resolve(message.result || {});
     }
-    await worker.setParameters({
-      tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<",
-      tessedit_pageseg_mode: "6",
-      load_system_dawg: "0",
-      load_freq_dawg: "0",
-      load_punc_dawg: "0",
-      load_number_dawg: "0",
-      load_unambig_dawg: "0",
-      load_bigram_dawg: "0",
-      user_defined_dpi: "300"
-    });
-    state.ocrWorker = worker;
-    return worker;
-  })();
-  return state.ocrWorkerPromise;
+  });
+  worker.addEventListener("error", event => {
+    const error = new Error(event.message || "MRZ scanner worker failed to load.");
+    for (const pending of state.mrzRequests.values()) pending.reject(error);
+    state.mrzRequests.clear();
+    state.mrzWorker = null;
+    worker.terminate();
+  });
+  state.mrzWorker = worker;
+  return worker;
 }
 
-/**
- * Release canvas bitmap memory immediately so sensitive passport pixels are never retained.
- */
+async function runMrzScan(blob, onProgress) {
+  const worker = ensureMrzWorker();
+  const id = ++state.mrzRequestId;
+  const bytes = await blob.arrayBuffer();
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      state.mrzRequests.delete(id);
+      reject(new Error("MRZ scan timed out. Try a sharper, closer view."));
+    }, 20000);
+    state.mrzRequests.set(id, {
+      onProgress,
+      resolve: result => { clearTimeout(timeout); resolve(result); },
+      reject: error => { clearTimeout(timeout); reject(error); }
+    });
+    worker.postMessage({ type: "scan", id, bytes }, [bytes]);
+  });
+}
+
 function releaseCanvas(canvas) {
   if (!canvas) return;
-  try {
-    canvas.width = 0;
-    canvas.height = 0;
-  } catch (_) {}
+  try { canvas.width = 0; canvas.height = 0; } catch (_) {}
 }
 
-function sourceSize(source) {
-  const sw = source.videoWidth || source.naturalWidth || source.width;
-  const sh = source.videoHeight || source.naturalHeight || source.height;
-  return { sw, sh };
-}
-
-function clampRegion(region, sw, sh) {
-  const x = Math.max(0, Math.min(sw - 1, Math.round(region.x || 0)));
-  const y = Math.max(0, Math.min(sh - 1, Math.round(region.y || 0)));
-  const w = Math.max(20, Math.min(sw - x, Math.round(region.w || sw)));
-  const h = Math.max(20, Math.min(sh - y, Math.round(region.h || sh)));
-  return { x, y, w, h, label: region.label || "candidate", score: region.score || 0 };
-}
-
-function enhanceMrzCanvas(canvas) {
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  const width = canvas.width;
-  const height = canvas.height;
-  if (!ctx || !width || !height) return canvas;
-
-  try {
-    const imgData = ctx.getImageData(0, 0, width, height);
-    const d = imgData.data;
-    const len = d.length;
-    const hist = new Array(256).fill(0);
-
-    for (let i = 0; i < len; i += 4) {
-      const g = Math.round((d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000);
-      hist[g] += 1;
-    }
-
-    const total = len / 4;
-    let low = 0;
-    let high = 255;
-    let acc = 0;
-    while (low < 255 && acc < total * 0.02) acc += hist[low++];
-    acc = 0;
-    while (high > 0 && acc < total * 0.02) acc += hist[high--];
-    const range = Math.max(24, high - low);
-
-    for (let i = 0; i < len; i += 4) {
-      const g = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
-      let v = ((g - low) / range) * 255;
-      v = Math.max(0, Math.min(255, (v - 128) * 1.18 + 128));
-      d[i] = v;
-      d[i + 1] = v;
-      d[i + 2] = v;
-    }
-    ctx.putImageData(imgData, 0, 0);
-  } catch (_) {}
-
-  return canvas;
-}
-
-function drawMrzCanvas(source, region, { targetWidth = 1180 } = {}) {
-  const { sw, sh } = sourceSize(source);
-  if (!sw || !sh) return null;
-  const r = clampRegion(region || { x: 0, y: 0, w: sw, h: sh }, sw, sh);
-  const normalizedWidth = Math.max(760, Math.min(1320, targetWidth));
-  const scale = normalizedWidth / r.w;
-  const targetHeight = Math.max(80, Math.round(r.h * scale));
-
+async function sourceToJpeg(source, maxWidth = 1280) {
+  const sourceWidth = source.videoWidth || source.naturalWidth || source.width;
+  const sourceHeight = source.videoHeight || source.naturalHeight || source.height;
+  if (!sourceWidth || !sourceHeight) throw new Error("Camera frame is not ready.");
+  const scale = Math.min(1, maxWidth / sourceWidth);
   const canvas = document.createElement("canvas");
-  canvas.width = normalizedWidth;
-  canvas.height = targetHeight;
-  canvas.dataset.regionLabel = r.label;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(source, r.x, r.y, r.w, r.h, 0, 0, normalizedWidth, targetHeight);
-  return enhanceMrzCanvas(canvas);
-}
-
-function detectMrzRegions(source) {
-  const { sw, sh } = sourceSize(source);
-  if (!sw || !sh) return [];
-
-  const aw = 480;
-  const ah = Math.max(260, Math.round((sh / sw) * aw));
-  const canvas = document.createElement("canvas");
-  canvas.width = aw;
-  canvas.height = ah;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(source, 0, 0, sw, sh, 0, 0, aw, ah);
-
-  let img;
+  canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+  canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+  const context = canvas.getContext("2d", { alpha: false });
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(source, 0, 0, canvas.width, canvas.height);
   try {
-    img = ctx.getImageData(0, 0, aw, ah).data;
-  } catch (_) {
+    return await new Promise((resolve, reject) => {
+      canvas.toBlob(
+        blob => blob ? resolve(blob) : reject(new Error("Could not capture passport image.")),
+        "image/jpeg",
+        0.92
+      );
+    });
+  } finally {
     releaseCanvas(canvas);
-    return [];
   }
-
-  const gray = new Uint8Array(aw * ah);
-  let sum = 0;
-  for (let i = 0, p = 0; i < img.length; i += 4, p += 1) {
-    const g = Math.round((img[i] * 299 + img[i + 1] * 587 + img[i + 2] * 114) / 1000);
-    gray[p] = g;
-    sum += g;
-  }
-  const avg = sum / gray.length;
-  const darkThreshold = Math.max(45, Math.min(165, avg - 18));
-  const rowScores = new Float32Array(ah);
-  const colScores = new Float32Array(aw);
-
-  for (let y = 1; y < ah - 1; y += 1) {
-    let rowScore = 0;
-    const row = y * aw;
-    for (let x = 1; x < aw - 1; x += 1) {
-      const idx = row + x;
-      const g = gray[idx];
-      const edge = Math.abs(g - gray[idx - 1]) + Math.abs(g - gray[idx + 1]);
-      const hit = g < darkThreshold || edge > 46;
-      if (hit) {
-        const weight = g < darkThreshold ? 1 : 0.45;
-        rowScore += weight;
-        colScores[x] += weight;
-      }
-    }
-    rowScores[y] = rowScore / aw;
-  }
-
-  const smooth = new Float32Array(ah);
-  for (let y = 0; y < ah; y += 1) {
-    let value = 0;
-    let n = 0;
-    for (let yy = Math.max(0, y - 3); yy <= Math.min(ah - 1, y + 3); yy += 1) {
-      value += rowScores[yy];
-      n += 1;
-    }
-    smooth[y] = value / n;
-  }
-
-  const sorted = Array.from(smooth).sort((a, b) => a - b);
-  const p85 = sorted[Math.floor(sorted.length * 0.85)] || 0;
-  const threshold = Math.max(0.055, p85 * 0.78);
-  const bands = [];
-  let y = 0;
-  while (y < ah) {
-    while (y < ah && smooth[y] < threshold) y += 1;
-    if (y >= ah) break;
-    const top = y;
-    let score = 0;
-    while (y < ah && smooth[y] >= threshold * 0.72) {
-      score += smooth[y];
-      y += 1;
-    }
-    const bottom = y - 1;
-    const height = bottom - top + 1;
-    if (height >= 2 && height <= ah * 0.12) {
-      bands.push({ top, bottom, center: (top + bottom) / 2, score: score / height, height });
-    }
-  }
-
-  const regions = [];
-  for (let i = 0; i < bands.length; i += 1) {
-    for (let j = i + 1; j < bands.length; j += 1) {
-      const a = bands[i];
-      const b = bands[j];
-      const gap = b.center - a.center;
-      if (gap < ah * 0.025 || gap > ah * 0.2) continue;
-      const combinedScore = a.score + b.score;
-      const top = Math.max(0, a.top - Math.round(gap * 1.15));
-      const bottom = Math.min(ah - 1, b.bottom + Math.round(gap * 0.95));
-      const y0 = Math.round((top / ah) * sh);
-      const y1 = Math.round((bottom / ah) * sh);
-      const padX = Math.round(sw * 0.04);
-      regions.push(clampRegion({
-        x: padX,
-        y: y0,
-        w: sw - padX * 2,
-        h: Math.max(Math.round(sh * 0.13), y1 - y0),
-        label: "detected",
-        score: combinedScore
-      }, sw, sh));
-    }
-  }
-
-  releaseCanvas(canvas);
-  return regions
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 3);
 }
 
-function buildMrzRegions(source, { thorough = false } = {}) {
-  const { sw, sh } = sourceSize(source);
-  if (!sw || !sh) return [];
-  const detected = detectMrzRegions(source);
-  const fallbacks = [
-    { x: 0, y: sh * 0.52, w: sw, h: sh * 0.46, label: "lower-passport", score: 0.2 },
-    { x: 0, y: sh * 0.34, w: sw, h: sh * 0.5, label: "middle-lower", score: 0.14 },
-    { x: 0, y: sh * 0.16, w: sw, h: sh * 0.68, label: "wide-frame", score: 0.08 }
-  ];
-  if (thorough) {
-    fallbacks.push(
-      { x: 0, y: 0, w: sw, h: sh, label: "full-frame", score: 0.03 },
-      { x: sw * 0.05, y: sh * 0.42, w: sw * 0.9, h: sh * 0.56, label: "center-bottom", score: 0.1 }
+function mrzDateToIso(value, kind) {
+  const raw = String(value || "").replace(/</g, "");
+  if (!/^\d{6}$/.test(raw)) return "";
+  const yy = Number(raw.slice(0, 2));
+  const month = Number(raw.slice(2, 4));
+  const day = Number(raw.slice(4, 6));
+  const currentYear = new Date().getFullYear();
+  const candidates = [1900 + yy, 2000 + yy, 2100 + yy];
+  let year;
+  if (kind === "birth") {
+    const valid = candidates.filter(candidate => candidate <= currentYear && candidate >= currentYear - 120);
+    year = valid.length ? Math.max(...valid) : 1900 + yy;
+  } else {
+    year = candidates.reduce((best, candidate) =>
+      Math.abs(candidate - currentYear) < Math.abs(best - currentYear) ? candidate : best
     );
   }
-
-  const out = [];
-  const seen = new Set();
-  for (const region of [...detected, ...fallbacks]) {
-    const r = clampRegion(region, sw, sh);
-    const key = [r.x, r.y, r.w, r.h].map(v => Math.round(v / 30)).join(":");
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(r);
-  }
-  return out.slice(0, thorough ? 7 : 3);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return "";
+  return `${year.toString().padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-function parseOcrMrzText(text) {
-  const extracted = extractTd3Mrz(text);
-  if (extracted.valid && extracted.data) return extracted.data;
-  const alt = tryParseMrz(text);
-  if (alt && alt.all_checks_passed) return alt;
-  return null;
+function parsedCheck(parsed, field) {
+  return parsed.details?.find(detail => detail.field === field)?.valid === true;
+}
+
+function normalizeMrzResult(result) {
+  const parsed = result?.parsed;
+  if (!parsed?.valid || parsed.format !== "TD3") return null;
+  const fields = parsed.fields || {};
+  const surname = String(fields.lastName || "").trim().toUpperCase();
+  const givenNames = String(fields.firstName || "").trim().toUpperCase();
+  const sexValue = String(fields.sex || "").toLowerCase();
+  return {
+    surname,
+    given_names: givenNames,
+    name: [givenNames, surname].filter(Boolean).join(" "),
+    passport_no: String(parsed.documentNumber || fields.documentNumber || "").replace(/</g, "").trim().toUpperCase(),
+    nationality: String(fields.nationality || "").trim().toUpperCase(),
+    issuing_state: String(fields.issuingState || "").trim().toUpperCase(),
+    dob: mrzDateToIso(fields.birthDate, "birth"),
+    passport_expiry: mrzDateToIso(fields.expirationDate, "expiry"),
+    sex: sexValue === "male" ? "M" : sexValue === "female" ? "F" : "",
+    name_truncated: false,
+    checks: {
+      passport: parsedCheck(parsed, "documentNumberCheckDigit"),
+      dob: parsedCheck(parsed, "birthDateCheckDigit"),
+      expiry: parsedCheck(parsed, "expirationDateCheckDigit"),
+      personal: parsedCheck(parsed, "personalNumberCheckDigit"),
+      composite: parsedCheck(parsed, "compositeCheckDigit")
+    }
+  };
+}
+
+function scanProgress(stage) {
+  const labels = {
+    detecting: "Finding MRZ anywhere in view...",
+    ocr: "Reading passport characters...",
+    parsing: "Validating ICAO check digits..."
+  };
+  const text = labels[stage] || "Scanning passport...";
+  $("#scanner-status").textContent = text;
+  updateConsensusUi(stage === "parsing" ? 2 : 1, text);
+}
+
+async function scanImageSource(source) {
+  const blob = await sourceToJpeg(source);
+  const result = await runMrzScan(blob, scanProgress);
+  const data = normalizeMrzResult(result);
+  if (data) return { data, error: null };
+  return {
+    data: null,
+    error: result.error || "No valid TD3 passport MRZ found. Move closer and keep the two MRZ lines sharp."
+  };
 }
 
 function updateConsensusUi(count, label) {
@@ -2792,12 +2659,8 @@ async function startScanner() {
   $("#scanner-dialog").showModal();
   state.scannerActive = true;
   state.scanBusy = false;
-  state.scanTickCount = 0;
-  updateConsensusUi(0, "Point camera at passport");
+  updateConsensusUi(0, "Point camera at the open passport");
   $("#scanner-status").textContent = "Starting camera...";
-
-  // Pre-warm Tesseract OCR worker in parallel with camera startup
-  getOcrWorker().catch(() => {});
 
   try {
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -2814,6 +2677,7 @@ async function startScanner() {
     const video = $("#camera-video");
     video.srcObject = state.camera;
     await video.play();
+
     const track = state.camera.getVideoTracks()[0];
     const capabilities = track.getCapabilities?.() || {};
     if (capabilities.focusMode?.includes("continuous")) {
@@ -2825,88 +2689,51 @@ async function startScanner() {
       torch = !torch;
       try {
         await track.applyConstraints({ advanced: [{ torch }] });
-        $("#torch-button").textContent = torch ? " Torch off" : " Torch on";
+        $("#torch-button").textContent = torch ? "Torch off" : "Torch on";
       } catch {
         toast("Torch is not available on this camera.");
       }
     };
-    const captureBtn = $("#capture-now-button");
-    if (captureBtn) captureBtn.disabled = false;
-    $("#scanner-status").textContent = "Hold passport steady - auto-detects MRZ (or tap Capture Now).";
-    updateConsensusUi(1, "Scanning passport...");
+
+    $("#capture-now-button").disabled = false;
+    $("#scanner-status").textContent = "Show the open passport anywhere in view. Scanning starts automatically.";
+    updateConsensusUi(1, "Searching the full camera view...");
     scannerTick();
   } catch (error) {
-    const captureBtn = $("#capture-now-button");
-    if (captureBtn) captureBtn.disabled = true;
+    $("#capture-now-button").disabled = true;
     const isDenied = error.name === "NotAllowedError";
-    $("#scanner-status").innerHTML = `<span style="color:#fbbf24;font-weight:600;">${isDenied ? "Camera permission denied." : "Live camera unavailable."}</span><br>Tap <b> Pick Photo</b> below to scan a passport photo.`;
+    $("#scanner-status").textContent = isDenied
+      ? "Camera permission denied. Allow camera access or pick a photo."
+      : "Live camera unavailable. Pick a passport photo instead.";
   }
-}
-
-async function scanImageSource(source) {
-  const worker = await getOcrWorker();
-
-  const regions = buildMrzRegions(source, { thorough: true });
-  let bestError = "Could not read valid MRZ. Keep the two bottom passport lines sharp and well-lit.";
-
-  for (const region of regions) {
-    const canvas = drawMrzCanvas(source, region, {
-      targetWidth: region.label === "full-frame" ? 1280 : 1180
-    });
-    if (!canvas) continue;
-    try {
-      const ocr = await worker.recognize(canvas);
-      const text = ocr?.data?.text || "";
-      const data = parseOcrMrzText(text);
-      if (data) {
-        return { data, error: null, region: region.label };
-      }
-      bestError = `No valid MRZ in ${region.label}. Trying another view...`;
-    } finally {
-      releaseCanvas(canvas);
-    }
-  }
-
-  return { data: null, error: bestError };
 }
 
 async function scannerTick() {
-  if (!state.scannerActive) return;
+  if (!state.scannerActive || state.scanBusy) return;
   const video = $("#camera-video");
-  const now = performance.now();
-  if (!state.scanBusy && video.readyState >= 2 && video.videoWidth && now - state.lastScanAt > 650) {
-    state.scanBusy = true;
-    state.lastScanAt = now;
-    let canvas = null;
-    try {
-      state.scanTickCount += 1;
-      const regions = buildMrzRegions(video, { thorough: false });
-      const region = regions[state.scanTickCount % Math.max(1, regions.length)] || regions[0];
-      canvas = drawMrzCanvas(video, region, { targetWidth: 1120 });
+  if (!video || video.readyState < 2 || !video.videoWidth) {
+    setTimeout(scannerTick, 150);
+    return;
+  }
 
-      if (canvas) {
-        const worker = await getOcrWorker();
-        const ocr = await worker.recognize(canvas);
-        const text = ocr?.data?.text || "";
-        const data = parseOcrMrzText(text);
-        if (data) {
-          updateConsensusUi(2, "OK Passport scanned!");
-          return showScanReview(data);
-        }
-
-        updateConsensusUi(1, region?.label === "detected" ? "MRZ area found - reading..." : "Searching full frame...");
-        $("#scanner-status").textContent = "Move slowly. The app scans the whole view; no box alignment needed.";
-      }
-    } catch (err) {
-      $("#scanner-status").textContent = err.message || "Scanning...";
-    } finally {
-      releaseCanvas(canvas);
-      state.scanBusy = false;
+  state.scanBusy = true;
+  try {
+    const { data, error } = await scanImageSource(video);
+    if (!state.scannerActive) return;
+    if (data) {
+      updateConsensusUi(2, "Passport verified");
+      showScanReview(data);
+      return;
     }
+    updateConsensusUi(0, "Keep the passport sharp and move closer");
+    $("#scanner-status").textContent = error;
+  } catch (error) {
+    if (state.scannerActive) $("#scanner-status").textContent = error.message || "Scanning...";
+  } finally {
+    state.scanBusy = false;
   }
-  if (state.scannerActive) {
-    setTimeout(scannerTick, 350);
-  }
+
+  if (state.scannerActive) setTimeout(scannerTick, 120);
 }
 
 async function captureNowFromVideo() {
@@ -2914,27 +2741,28 @@ async function captureNowFromVideo() {
   if (!video || video.readyState < 2 || !video.videoWidth) {
     return toast("Camera is not ready yet. Use Pick Photo instead.");
   }
-  const btn = $("#capture-now-button");
-  if (btn) { btn.disabled = true; btn.textContent = "Scanning..."; }
+  if (state.scanBusy) return toast("A scan is already running.");
+
+  const button = $("#capture-now-button");
+  button.disabled = true;
+  button.textContent = "Scanning...";
   state.scanBusy = true;
-
   try {
-    $("#scanner-status").textContent = "Analyzing captured frame...";
-    updateConsensusUi(1, "Reading passport...");
-
     const { data, error } = await scanImageSource(video);
     if (data) {
-      updateConsensusUi(2, "OK Passport scanned!");
-      return showScanReview(data);
+      updateConsensusUi(2, "Passport verified");
+      showScanReview(data);
+      return;
     }
     updateConsensusUi(0, "Try again");
-    $("#scanner-status").textContent = error || "Could not read MRZ. Please hold still and try again.";
-    toast("Could not read MRZ. Please adjust angle or lighting and tap Capture Now again.");
-  } catch (err) {
-    $("#scanner-status").textContent = `Scan failed: ${err.message || "Try again"}`;
+    $("#scanner-status").textContent = error;
+    toast("MRZ not verified. Move closer, avoid glare, and try again.");
+  } catch (error) {
+    $("#scanner-status").textContent = `Scan failed: ${error.message || "Try again"}`;
   } finally {
     state.scanBusy = false;
-    if (btn) { btn.disabled = false; btn.textContent = "Capture Now"; }
+    button.disabled = false;
+    button.textContent = "Scan Now";
   }
 }
 
@@ -2943,7 +2771,8 @@ function stopScanner() {
   state.scanBusy = false;
   state.camera?.getTracks().forEach(track => track.stop());
   state.camera = null;
-  $("#camera-video").srcObject = null;
+  const video = $("#camera-video");
+  if (video) video.srcObject = null;
   if ($("#scanner-dialog").open) $("#scanner-dialog").close();
 }
 
@@ -3567,7 +3396,12 @@ async function boot() {
   window.addEventListener("online", syncNow);
   window.addEventListener("offline", updateSyncPill);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) syncNow(); });
-  if ("serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("./sw.js").catch(error => console.warn("Service worker registration failed", error));
+  if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+    navigator.serviceWorker.register("./sw.js")
+      .then(() => navigator.serviceWorker.ready)
+      .then(registration => (navigator.serviceWorker.controller || registration.active)?.postMessage("CACHE_MRZ"))
+      .catch(error => console.warn("Service worker registration failed", error));
+  }
   showAuth();
   if (configured && state.supabase) {
     try {

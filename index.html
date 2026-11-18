@@ -215,26 +215,23 @@
   <dialog id="scanner-dialog" class="scanner-dialog">
     <div class="scanner-head">
       <div>
-        <h2>Fast Passport Scanner</h2>
-        <span>Just point at the passport - auto-detects anywhere</span>
+        <h2>Passport MRZ Scanner</h2>
+        <span>Open the passport and show it anywhere in the camera view</span>
       </div>
       <button type="button" class="icon-button scanner-close-btn" data-close aria-label="Close">x</button>
     </div>
     <div class="video-wrap">
       <video id="camera-video" playsinline muted></video>
-      <div class="viewfinder-corners" aria-hidden="true"></div>
-      <div class="scanner-laser" id="scanner-laser" aria-hidden="true"></div>
-      <div class="auto-mrz-highlight" id="auto-mrz-box" hidden></div>
       <div class="scan-success-flash" id="scan-success-flash" aria-hidden="true"></div>
       <div class="consensus-pill" id="consensus-pill" aria-live="polite">
         <span class="consensus-dot" id="cdot-1"></span>
         <span class="consensus-dot" id="cdot-2"></span>
-        <span id="consensus-label">Point at passport anywhere in view</span>
+        <span id="consensus-label">Show the open passport anywhere in view</span>
       </div>
     </div>
-    <p id="scanner-status" role="status" aria-live="polite">Point camera at the passport - no need to align inside a box.</p>
+    <p id="scanner-status" role="status" aria-live="polite">No alignment box: keep the passport sharp, flat, and well lit.</p>
     <div class="scanner-actions">
-      <button id="capture-now-button" type="button" class="primary btn-lg full">Capture Now</button>
+      <button id="capture-now-button" type="button" class="primary btn-lg full">Scan Now</button>
       <div class="button-row">
         <button id="torch-button" type="button" class="secondary" hidden>Torch</button>
         <button id="photo-button" type="button" class="secondary">Pick Photo</button>

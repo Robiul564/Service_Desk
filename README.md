@@ -82,11 +82,12 @@ Twelve passport expiries are marked `review = true`. Their date fields are blank
 
    ```powershell
    New-Item -ItemType Directory -Force .\dist | Out-Null
-   Copy-Item .\index.html, .\app.js, .\mrz.mjs, .\styles.css, .\config.js, .\sw.js, .\manifest.webmanifest, .\icon.svg .\dist\
+   Copy-Item .\index.html, .\app.js, .\styles.css, .\config.js, .\sw.js, .\manifest.webmanifest, .\icon.svg .\dist\
+   Copy-Item .\vendor .\dist\vendor -Recurse
    Get-ChildItem .\dist
    ```
 
-   Verify that the listing contains only those eight files. Never copy `seed.sql`, `schema.sql`, the workbook, backups, README, test files, or Supabase function files to the public site. For later deployments, use a fresh, empty staging directory and repeat the allowlisted copy.
+   Verify that the listing contains only those seven files and the `vendor` directory. Never copy `seed.sql`, `schema.sql`, the workbook, backups, README, test files, or Supabase function files to the public site. For later deployments, use a fresh, empty staging directory and repeat the allowlisted copy.
 3. Deploy the contents of `dist` with a free static host:
    - **Cloudflare Pages:** create a Pages project with **Direct Upload**, choose a project name, and upload the `dist` folder.
    - **Netlify:** use the manual deploy/drag-and-drop screen and upload `dist`.
@@ -96,7 +97,7 @@ Twelve passport expiries are marked `review = true`. Their date fields are blank
 
 ### Render + Supabase Free
 
-The Render Blueprint in `render.yaml` creates a free static site. Its build script publishes only the eight public app files into `dist`, generates `config.js` from Render environment variables, and versions the service-worker cache for each build so deployed settings refresh. It fails if either value is missing and rejects known Supabase secret/service-role keys.
+The Render Blueprint in `render.yaml` creates a free static site. Its build script publishes only the public app files and scanner runtime into `dist`, generates `config.js` from Render environment variables, and versions the service-worker cache for each build so deployed settings refresh. It fails if either value is missing and rejects known Supabase secret/service-role keys.
 
 1. Create a Supabase Free project and complete the schema, owner-admin, and signup-disable steps above. Supabase Free currently includes 500 MB and can pause projects after one week of inactivity; it has no uptime SLA. It is suitable for a cost-free trial, not guaranteed continuous availability. Keep verified backups.
 2. Before pushing this folder, create a **private** GitHub repository. `.gitignore` excludes `seed.sql`, spreadsheets, local backups, `.env` files, and `dist`. Verify those personal-data files are not tracked or committed; `.gitignore` cannot remove files already committed.
@@ -130,17 +131,16 @@ where lower(email) = lower('staff@example.com');
 
 ## Test and maintenance
 
-With Node.js 20+ installed, run the focused MRZ unit tests from this folder:
+With Node.js 22+ installed, run the project checks from this folder:
 
 ```powershell
-node --test tests\mrz.test.mjs
+npm test
 ```
 
 For browser-module syntax validation:
 
 ```powershell
 Get-Content .\app.js -Raw | node --input-type=module --check
-node --check .\mrz.mjs
 node --check .\sw.js
 ```
 
@@ -149,7 +149,8 @@ Review **More → Cloud sync** when the badge reports pending changes or an erro
 ## Manual verification and known limitations
 
 - Manually verify the twelve passport expiry entries marked for review and any other questionable source data before relying on alerts.
-- Camera scanning, continuous focus, and the torch depend on the phone and browser. Camera permission requires HTTPS. OCR and first-time language/core downloads require a network connection; a cached PWA shell does not guarantee every Tesseract worker/language asset is available offline.
+- Camera scanning, continuous focus, and the torch depend on the phone and browser. Camera permission requires HTTPS. The first scan loads the local ONNX/WASM scanner runtime; subsequent scans use the browser cache. The scanner runs on-device and accepts only ICAO-valid TD3 passport results, but staff must still compare the review screen with the physical passport before registration.
+- The MRZ scanner component is derived from ALSENET MRZ Scanner v2 under AGPL-3.0-or-later. Its license and exact source revision are documented in `vendor/mrz-scanner`.
 - Excel export lazily downloads pinned SheetJS from jsDelivr; PDF export uses the browser print dialog’s **Save as PDF**. These export-library/print actions may need network access or a browser that supports printing.
 - Offline edits are stored in browser IndexedDB, which is not encrypted by this app. Use a secured, locked phone and sign out on shared devices. The app partitions offline data by account.
 - Last-write-wins uses device edit timestamps against server timestamps; clock skew can affect conflict outcomes. Previous server versions remain in audit history. Check history when two staff edit the same record offline.

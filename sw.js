@@ -1,9 +1,12 @@
-const CACHE = "passport-desk-shell-v10";
-const APP_FILES = ["./", "./index.html", "./styles.css", "./config.js", "./app.js", "./mrz.mjs", "./manifest.webmanifest", "./icon.svg"];
-const OCR_ASSETS = [
-  "./model/mrz.traineddata.gz",
-  "./vendor/tesseract/tesseract.min.js",
-  "./vendor/tesseract/worker.min.js"
+const CACHE = "passport-desk-shell-v11";
+const APP_FILES = ["./", "./index.html", "./styles.css", "./config.js", "./app.js", "./manifest.webmanifest", "./icon.svg"];
+const MRZ_ASSETS = [
+  "./vendor/mrz-scanner/worker.js",
+  "./vendor/mrz-scanner/mrz-cnn.onnx",
+  "./vendor/mrz-scanner/chunks/preload-helper-D9-d1NeU.js",
+  "./vendor/mrz-scanner/chunks/ort.wasm.min-BSurf3ne.js",
+  "./vendor/mrz-scanner/chunks/ort-wasm-simd-threaded.mjs",
+  "./vendor/mrz-scanner/chunks/ort-wasm-simd-threaded.wasm"
 ];
 const EXTERNAL = [
   "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"
@@ -33,8 +36,8 @@ self.addEventListener("fetch", event => {
   const url = new URL(request.url);
 
   if (url.origin === self.location.origin) {
-    // Cache-First for immutable heavy OCR runtime & traineddata assets (instant offline startup!)
-    if (url.pathname.includes("/vendor/tesseract/") || url.pathname.includes("/model/")) {
+    // Cache-first for the pinned, immutable MRZ model and WASM runtime.
+    if (url.pathname.includes("/vendor/mrz-scanner/")) {
       event.respondWith(
         caches.match(request).then(cached => cached || fetch(request).then(response => {
           if (response.ok) caches.open(CACHE).then(cache => cache.put(request, response.clone()));
@@ -72,9 +75,11 @@ self.addEventListener("message", event => {
   if (event.data === "SKIP_WAITING") {
     self.skipWaiting();
   }
-  if (event.data === "CACHE_OCR") {
-    event.waitUntil(caches.open(CACHE).then(cache => Promise.all([...OCR_ASSETS, ...EXTERNAL].map(async url => {
-      try { await cache.add(url); } catch { /* Runtime downloads remain available when connected. */ }
+  if (event.data === "CACHE_MRZ") {
+    event.waitUntil(caches.open(CACHE).then(cache => Promise.all([...MRZ_ASSETS, ...EXTERNAL].map(async url => {
+      try {
+        if (!await cache.match(url)) await cache.add(url);
+      } catch { /* Runtime downloads remain available when connected. */ }
     }))));
   }
 });

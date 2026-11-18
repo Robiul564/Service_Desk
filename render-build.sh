@@ -42,8 +42,8 @@ fi
 stage="$(mktemp -d ./.passport-desk-build.XXXXXX)"
 trap 'rm -rf -- "$stage"' EXIT
 
-cp index.html app.js mrz.mjs styles.css manifest.webmanifest icon.svg "$stage/"
-cp -r model vendor "$stage/"
+cp index.html app.js styles.css manifest.webmanifest icon.svg "$stage/"
+cp -r vendor "$stage/"
 cache_name="passport-desk-shell-$(date -u +%Y%m%d%H%M%S)"
 sed -E "s/passport-desk-shell-[^\"]+/${cache_name}/" sw.js > "$stage/sw.js"
 

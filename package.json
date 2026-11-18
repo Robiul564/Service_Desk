@@ -7,7 +7,7 @@
   "scripts": {
     "start": "python -m http.server 3000",
     "dev": "python -m http.server 3000",
-    "test": "node tests/mrz.test.mjs"
+    "test": "node --check app.js && node --check sw.js"
   },
   "keywords": [
     "passport-management",
@@ -19,5 +19,5 @@
     "zero-data-loss"
   ],
   "author": "Passport Desk",
-  "license": "MIT"
+  "license": "AGPL-3.0-or-later"
 }
