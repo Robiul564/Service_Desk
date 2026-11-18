@@ -1,4 +1,4 @@
-import { parseTd3Mrz, extractTd3Mrz, tryParseMrz, MrzFrameConsensus } from "./mrz.mjs";
+import { extractTd3Mrz, tryParseMrz } from "./mrz.mjs";
 
 const TABLES = ["workers", "agents", "companies", "payments", "handovers", "expenses", "user_profiles", "history"];
 const DATA_TABLES = TABLES.filter(table => !["user_profiles", "history"].includes(table));
@@ -105,6 +105,7 @@ const state = {
   scannerActive: false,
   scanBusy: false,
   scanTickCount: 0,
+  lastScanAt: 0,
   ocrWorker: null,
   ocrWorkerPromise: null,
   saving: false,
@@ -2543,62 +2544,224 @@ function releaseCanvas(canvas) {
   } catch (_) {}
 }
 
-/**
- * Fast, basic canvas preprocessor for MRZ recognition:
- * Rescales to standard width (~1000px) and applies contrast-stretched grayscale.
- */
-function prepareMrzCanvas(source, cropBottom = true) {
+function sourceSize(source) {
   const sw = source.videoWidth || source.naturalWidth || source.width;
   const sh = source.videoHeight || source.naturalHeight || source.height;
-  if (!sw || !sh) return null;
+  return { sw, sh };
+}
 
-  let sx = 0, sy = 0, cw = sw, ch = sh;
-  if (cropBottom) {
-    // Crop bottom 52% of the frame where passport MRZ is standardly positioned
-    sy = Math.round(sh * 0.48);
-    ch = sh - sy;
-  }
+function clampRegion(region, sw, sh) {
+  const x = Math.max(0, Math.min(sw - 1, Math.round(region.x || 0)));
+  const y = Math.max(0, Math.min(sh - 1, Math.round(region.y || 0)));
+  const w = Math.max(20, Math.min(sw - x, Math.round(region.w || sw)));
+  const h = Math.max(20, Math.min(sh - y, Math.round(region.h || sh)));
+  return { x, y, w, h, label: region.label || "candidate", score: region.score || 0 };
+}
 
-  const targetWidth = Math.min(1280, Math.max(900, cw));
-  const scale = targetWidth / cw;
-  const targetHeight = Math.round(ch * scale);
-
-  const canvas = document.createElement("canvas");
-  canvas.width = targetWidth;
-  canvas.height = targetHeight;
+function enhanceMrzCanvas(canvas) {
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-
-  ctx.drawImage(source, sx, sy, cw, ch, 0, 0, targetWidth, targetHeight);
+  const width = canvas.width;
+  const height = canvas.height;
+  if (!ctx || !width || !height) return canvas;
 
   try {
-    const imgData = ctx.getImageData(0, 0, targetWidth, targetHeight);
+    const imgData = ctx.getImageData(0, 0, width, height);
     const d = imgData.data;
     const len = d.length;
+    const hist = new Array(256).fill(0);
 
-    let min = 255;
-    let max = 0;
+    for (let i = 0; i < len; i += 4) {
+      const g = Math.round((d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000);
+      hist[g] += 1;
+    }
+
+    const total = len / 4;
+    let low = 0;
+    let high = 255;
+    let acc = 0;
+    while (low < 255 && acc < total * 0.02) acc += hist[low++];
+    acc = 0;
+    while (high > 0 && acc < total * 0.02) acc += hist[high--];
+    const range = Math.max(24, high - low);
+
     for (let i = 0; i < len; i += 4) {
       const g = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
-      if (g < min) min = g;
-      if (g > max) max = g;
+      let v = ((g - low) / range) * 255;
+      v = Math.max(0, Math.min(255, (v - 128) * 1.18 + 128));
+      d[i] = v;
+      d[i + 1] = v;
+      d[i + 2] = v;
     }
-
-    const range = max - min;
-    if (range > 20) {
-      for (let i = 0; i < len; i += 4) {
-        const g = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
-        const stretched = Math.min(255, Math.max(0, ((g - min) / range) * 255));
-        d[i] = stretched;
-        d[i + 1] = stretched;
-        d[i + 2] = stretched;
-      }
-      ctx.putImageData(imgData, 0, 0);
-    }
+    ctx.putImageData(imgData, 0, 0);
   } catch (_) {}
 
   return canvas;
+}
+
+function drawMrzCanvas(source, region, { targetWidth = 1180 } = {}) {
+  const { sw, sh } = sourceSize(source);
+  if (!sw || !sh) return null;
+  const r = clampRegion(region || { x: 0, y: 0, w: sw, h: sh }, sw, sh);
+  const normalizedWidth = Math.max(760, Math.min(1320, targetWidth));
+  const scale = normalizedWidth / r.w;
+  const targetHeight = Math.max(80, Math.round(r.h * scale));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = normalizedWidth;
+  canvas.height = targetHeight;
+  canvas.dataset.regionLabel = r.label;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(source, r.x, r.y, r.w, r.h, 0, 0, normalizedWidth, targetHeight);
+  return enhanceMrzCanvas(canvas);
+}
+
+function detectMrzRegions(source) {
+  const { sw, sh } = sourceSize(source);
+  if (!sw || !sh) return [];
+
+  const aw = 480;
+  const ah = Math.max(260, Math.round((sh / sw) * aw));
+  const canvas = document.createElement("canvas");
+  canvas.width = aw;
+  canvas.height = ah;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(source, 0, 0, sw, sh, 0, 0, aw, ah);
+
+  let img;
+  try {
+    img = ctx.getImageData(0, 0, aw, ah).data;
+  } catch (_) {
+    releaseCanvas(canvas);
+    return [];
+  }
+
+  const gray = new Uint8Array(aw * ah);
+  let sum = 0;
+  for (let i = 0, p = 0; i < img.length; i += 4, p += 1) {
+    const g = Math.round((img[i] * 299 + img[i + 1] * 587 + img[i + 2] * 114) / 1000);
+    gray[p] = g;
+    sum += g;
+  }
+  const avg = sum / gray.length;
+  const darkThreshold = Math.max(45, Math.min(165, avg - 18));
+  const rowScores = new Float32Array(ah);
+  const colScores = new Float32Array(aw);
+
+  for (let y = 1; y < ah - 1; y += 1) {
+    let rowScore = 0;
+    const row = y * aw;
+    for (let x = 1; x < aw - 1; x += 1) {
+      const idx = row + x;
+      const g = gray[idx];
+      const edge = Math.abs(g - gray[idx - 1]) + Math.abs(g - gray[idx + 1]);
+      const hit = g < darkThreshold || edge > 46;
+      if (hit) {
+        const weight = g < darkThreshold ? 1 : 0.45;
+        rowScore += weight;
+        colScores[x] += weight;
+      }
+    }
+    rowScores[y] = rowScore / aw;
+  }
+
+  const smooth = new Float32Array(ah);
+  for (let y = 0; y < ah; y += 1) {
+    let value = 0;
+    let n = 0;
+    for (let yy = Math.max(0, y - 3); yy <= Math.min(ah - 1, y + 3); yy += 1) {
+      value += rowScores[yy];
+      n += 1;
+    }
+    smooth[y] = value / n;
+  }
+
+  const sorted = Array.from(smooth).sort((a, b) => a - b);
+  const p85 = sorted[Math.floor(sorted.length * 0.85)] || 0;
+  const threshold = Math.max(0.055, p85 * 0.78);
+  const bands = [];
+  let y = 0;
+  while (y < ah) {
+    while (y < ah && smooth[y] < threshold) y += 1;
+    if (y >= ah) break;
+    const top = y;
+    let score = 0;
+    while (y < ah && smooth[y] >= threshold * 0.72) {
+      score += smooth[y];
+      y += 1;
+    }
+    const bottom = y - 1;
+    const height = bottom - top + 1;
+    if (height >= 2 && height <= ah * 0.12) {
+      bands.push({ top, bottom, center: (top + bottom) / 2, score: score / height, height });
+    }
+  }
+
+  const regions = [];
+  for (let i = 0; i < bands.length; i += 1) {
+    for (let j = i + 1; j < bands.length; j += 1) {
+      const a = bands[i];
+      const b = bands[j];
+      const gap = b.center - a.center;
+      if (gap < ah * 0.025 || gap > ah * 0.2) continue;
+      const combinedScore = a.score + b.score;
+      const top = Math.max(0, a.top - Math.round(gap * 1.15));
+      const bottom = Math.min(ah - 1, b.bottom + Math.round(gap * 0.95));
+      const y0 = Math.round((top / ah) * sh);
+      const y1 = Math.round((bottom / ah) * sh);
+      const padX = Math.round(sw * 0.04);
+      regions.push(clampRegion({
+        x: padX,
+        y: y0,
+        w: sw - padX * 2,
+        h: Math.max(Math.round(sh * 0.13), y1 - y0),
+        label: "detected",
+        score: combinedScore
+      }, sw, sh));
+    }
+  }
+
+  releaseCanvas(canvas);
+  return regions
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3);
+}
+
+function buildMrzRegions(source, { thorough = false } = {}) {
+  const { sw, sh } = sourceSize(source);
+  if (!sw || !sh) return [];
+  const detected = detectMrzRegions(source);
+  const fallbacks = [
+    { x: 0, y: sh * 0.52, w: sw, h: sh * 0.46, label: "lower-passport", score: 0.2 },
+    { x: 0, y: sh * 0.34, w: sw, h: sh * 0.5, label: "middle-lower", score: 0.14 },
+    { x: 0, y: sh * 0.16, w: sw, h: sh * 0.68, label: "wide-frame", score: 0.08 }
+  ];
+  if (thorough) {
+    fallbacks.push(
+      { x: 0, y: 0, w: sw, h: sh, label: "full-frame", score: 0.03 },
+      { x: sw * 0.05, y: sh * 0.42, w: sw * 0.9, h: sh * 0.56, label: "center-bottom", score: 0.1 }
+    );
+  }
+
+  const out = [];
+  const seen = new Set();
+  for (const region of [...detected, ...fallbacks]) {
+    const r = clampRegion(region, sw, sh);
+    const key = [r.x, r.y, r.w, r.h].map(v => Math.round(v / 30)).join(":");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return out.slice(0, thorough ? 7 : 3);
+}
+
+function parseOcrMrzText(text) {
+  const extracted = extractTd3Mrz(text);
+  if (extracted.valid && extracted.data) return extracted.data;
+  const alt = tryParseMrz(text);
+  if (alt && alt.all_checks_passed) return alt;
+  return null;
 }
 
 function updateConsensusUi(count, label) {
@@ -2683,78 +2846,56 @@ async function startScanner() {
 async function scanImageSource(source) {
   const worker = await getOcrWorker();
 
-  // Try 1: bottom 52% crop (standard MRZ location)
-  const bottomCanvas = prepareMrzCanvas(source, true);
-  if (bottomCanvas) {
+  const regions = buildMrzRegions(source, { thorough: true });
+  let bestError = "Could not read valid MRZ. Keep the two bottom passport lines sharp and well-lit.";
+
+  for (const region of regions) {
+    const canvas = drawMrzCanvas(source, region, {
+      targetWidth: region.label === "full-frame" ? 1280 : 1180
+    });
+    if (!canvas) continue;
     try {
-      const ocr = await worker.recognize(bottomCanvas);
+      const ocr = await worker.recognize(canvas);
       const text = ocr?.data?.text || "";
-      const extracted = extractTd3Mrz(text);
-      if (extracted.valid && extracted.data) {
-        return { data: extracted.data, error: null };
+      const data = parseOcrMrzText(text);
+      if (data) {
+        return { data, error: null, region: region.label };
       }
-      const alt = tryParseMrz(text);
-      if (alt && alt.all_checks_passed) {
-        return { data: alt, error: null };
-      }
+      bestError = `No valid MRZ in ${region.label}. Trying another view...`;
     } finally {
-      releaseCanvas(bottomCanvas);
+      releaseCanvas(canvas);
     }
   }
 
-  // Try 2: full frame (in case framed closely or held differently)
-  const fullCanvas = prepareMrzCanvas(source, false);
-  if (fullCanvas) {
-    try {
-      const ocr = await worker.recognize(fullCanvas);
-      const text = ocr?.data?.text || "";
-      const extracted = extractTd3Mrz(text);
-      if (extracted.valid && extracted.data) {
-        return { data: extracted.data, error: null };
-      }
-      const alt = tryParseMrz(text);
-      if (alt && alt.all_checks_passed) {
-        return { data: alt, error: null };
-      }
-    } finally {
-      releaseCanvas(fullCanvas);
-    }
-  }
-
-  return { data: null, error: "Could not read valid MRZ. Please make sure the passport bottom lines are clear and well-lit." };
+  return { data: null, error: bestError };
 }
 
 async function scannerTick() {
   if (!state.scannerActive) return;
   const video = $("#camera-video");
-  if (!state.scanBusy && video.readyState >= 2 && video.videoWidth) {
+  const now = performance.now();
+  if (!state.scanBusy && video.readyState >= 2 && video.videoWidth && now - state.lastScanAt > 650) {
     state.scanBusy = true;
+    state.lastScanAt = now;
     let canvas = null;
     try {
       state.scanTickCount += 1;
-      // Alternate: bottom crop 3 ticks, full frame 1 tick
-      const cropBottom = (state.scanTickCount % 4 !== 0);
-      canvas = prepareMrzCanvas(video, cropBottom);
+      const regions = buildMrzRegions(video, { thorough: false });
+      const region = regions[state.scanTickCount % Math.max(1, regions.length)] || regions[0];
+      canvas = drawMrzCanvas(video, region, { targetWidth: 1120 });
 
       if (canvas) {
         const worker = await getOcrWorker();
         const ocr = await worker.recognize(canvas);
         const text = ocr?.data?.text || "";
-        const extracted = extractTd3Mrz(text);
-
-        if (extracted.valid && extracted.data) {
+        const data = parseOcrMrzText(text);
+        if (data) {
           updateConsensusUi(2, "OK Passport scanned!");
-          return showScanReview(extracted.data);
+          return showScanReview(data);
         }
 
-        const alt = tryParseMrz(text);
-        if (alt && alt.all_checks_passed) {
-          updateConsensusUi(2, "OK Passport scanned!");
-          return showScanReview(alt);
-        }
-
-        updateConsensusUi(1, "Scanning passport... hold steady");
-        $("#scanner-status").textContent = "Scanning passport... hold steady or tap Capture Now.";
+        updateConsensusUi(1, region?.label === "detected" ? "MRZ area found - reading..." : "Searching full frame...");
+        $("#scanner-status").textContent = "Move slowly. The app scans the whole view; no box alignment needed.";
       }
     } catch (err) {
       $("#scanner-status").textContent = err.message || "Scanning...";
